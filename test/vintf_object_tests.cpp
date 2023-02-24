@@ -26,7 +26,6 @@
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <gtest/gtest.h>
-#include <hidl-util/FQName.h>
 
 #include <vintf/VintfObject.h>
 #include <vintf/parse_string.h>
@@ -39,10 +38,12 @@
 using namespace ::testing;
 using namespace std::literals;
 
-using android::FqInstance;
 using android::base::testing::HasError;
+using android::base::testing::HasValue;
 using android::base::testing::Ok;
+using android::base::testing::WithCode;
 using android::base::testing::WithMessage;
+using android::vintf::FqInstance;
 
 #define EXPECT_IN(sub, str) EXPECT_THAT(str, HasSubstr(sub))
 #define EXPECT_NOT_IN(sub, str) EXPECT_THAT(str, Not(HasSubstr(sub)))
@@ -533,8 +534,11 @@ class VintfObjectTestBase : public ::testing::Test {
         // Map the apex with manifest to the files below
         const std::string& active_apex = apex_dirs.at(0);
 
-        EXPECT_CALL(apex(), DeviceVintfDirs())
-            .WillOnce(Return(apex_dirs))
+        EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _))
+            .WillOnce(Invoke([apex_dirs](auto*, auto* out, auto*){
+                *out = apex_dirs;
+                return ::android::OK;
+            }))
             ;
 
         EXPECT_CALL(fetcher(), listFiles(_, _, _))
@@ -551,6 +555,9 @@ class VintfObjectTestBase : public ::testing::Test {
 
         // Expect to fetch APEX directory manifest once.
         expectFetch(std::string(active_apex).append("manifest.xml"), manifest);
+
+        ON_CALL(propertyFetcher(), getBoolProperty("apex.all.ready", _))
+            .WillByDefault(Return(true));
     }
 
     std::unique_ptr<VintfObject> vintfObject;
@@ -950,15 +957,24 @@ class DeviceManifestTest : public VintfObjectTestBase {
       // Map the apex with manifest to the files below
       const std::string& active_apex = apex_dirs.at(0);
 
-      EXPECT_CALL(apex(), DeviceVintfDirs())
-          .WillOnce({}) // Initialization
-          .WillOnce(Return(apex_dirs)) // after apex loaded
+      EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _))
+          .WillOnce(Invoke([](auto*, auto* out, auto*){
+            *out = {};
+            return ::android::OK;
+          })) // Initialization
+          .WillOnce(Invoke([apex_dirs](auto*, auto* out, auto*){
+            *out = apex_dirs;
+            return ::android::OK;
+          })) // after apex loaded
           ;
 
-      EXPECT_CALL(apex(),HasUpdate()) // Not called during init
+      EXPECT_CALL(apex(), HasUpdate(_)) // Not called during init
           .WillOnce(Return(true)) // Apex loaded
           .WillOnce(Return(false)) // no updated to apex data
           ;
+
+      ON_CALL(propertyFetcher(), getBoolProperty("apex.all.ready", _))
+          .WillByDefault(Return(true));
 
       EXPECT_CALL(fetcher(), listFiles(_, _, _))
           .WillRepeatedly(Invoke([](const auto&, auto* out, auto*) {
@@ -2068,15 +2084,19 @@ class FrameworkManifestLevelTest : public VintfObjectTestBase {
         auto head = "<manifest " + kMetaVersionStr + R"( type="framework">)";
         auto tail = "</manifest>";
 
-        auto systemManifest = head + getFragment(HalFormat::HIDL, 13, "@3.0::ISystemEtc") +
-                              getFragment(HalFormat::AIDL, 14, "ISystemEtc4") + tail;
+        auto systemManifest =
+            head + getFragment(HalFormat::HIDL, Level::UNSPECIFIED, Level{13}, "@3.0::ISystemEtc") +
+            getFragment(HalFormat::AIDL, Level{13}, Level{14}, "ISystemEtc4") + tail;
         expectFetch(kSystemManifest, systemManifest);
 
-        auto hidlFragment =
-            head + getFragment(HalFormat::HIDL, 14, "@4.0::ISystemEtcFragment") + tail;
+        auto hidlFragment = head +
+                            getFragment(HalFormat::HIDL, Level::UNSPECIFIED, Level{14},
+                                        "@4.0::ISystemEtcFragment") +
+                            tail;
         expectFetch(kSystemManifestFragmentDir + "hidl.xml"s, hidlFragment);
 
-        auto aidlFragment = head + getFragment(HalFormat::AIDL, 13, "ISystemEtcFragment3") + tail;
+        auto aidlFragment =
+            head + getFragment(HalFormat::AIDL, Level{12}, Level{13}, "ISystemEtcFragment3") + tail;
         expectFetch(kSystemManifestFragmentDir + "aidl.xml"s, aidlFragment);
 
         EXPECT_CALL(fetcher(), listFiles(StrEq(kSystemManifestFragmentDir), _, _))
@@ -2115,18 +2135,27 @@ class FrameworkManifestLevelTest : public VintfObjectTestBase {
     }
 
    private:
-    std::string getFragment(HalFormat halFormat, size_t maxLevel, const char* versionedInterface) {
-        auto format = R"(<hal format="%s" max-level="%s">
+    std::string getFragment(HalFormat halFormat, Level minLevel, Level maxLevel,
+                            const char* versionedInterface) {
+        auto format = R"(<hal format="%s"%s>
                              <name>android.frameworks.foo</name>
                              %s
                              <fqname>%s/default</fqname>
                          </hal>)";
-        std::string level = to_string(static_cast<Level>(maxLevel));
+        std::string halAttrs;
+        if (minLevel != Level::UNSPECIFIED) {
+            halAttrs +=
+                android::base::StringPrintf(R"( min-level="%s")", to_string(minLevel).c_str());
+        }
+        if (maxLevel != Level::UNSPECIFIED) {
+            halAttrs +=
+                android::base::StringPrintf(R"( max-level="%s")", to_string(maxLevel).c_str());
+        }
         const char* transport = "";
         if (halFormat == HalFormat::HIDL) {
             transport = "<transport>hwbinder</transport>";
         }
-        return android::base::StringPrintf(format, to_string(halFormat).c_str(), level.c_str(),
+        return android::base::StringPrintf(format, to_string(halFormat).c_str(), halAttrs.c_str(),
                                            transport, versionedInterface);
     }
 };
@@ -2136,10 +2165,27 @@ TEST_F(FrameworkManifestLevelTest, NoTargetFcmVersion) {
         android::base::StringPrintf(R"(<manifest %s type="device"/> )", kMetaVersionStr.c_str());
     expectFetch(kVendorManifest, xml);
 
+    // If no target FCM version, it is treated as an infinitely old device
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4", false);
+}
+
+TEST_F(FrameworkManifestLevelTest, TargetFcmVersion11) {
+    expectTargetFcmVersion(11);
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4", false);
+}
+
+TEST_F(FrameworkManifestLevelTest, TargetFcmVersion12) {
+    expectTargetFcmVersion(12);
     expectContainsHidl({3, 0}, "ISystemEtc");
     expectContainsHidl({4, 0}, "ISystemEtcFragment");
     expectContainsAidl("ISystemEtcFragment3");
-    expectContainsAidl("ISystemEtc4");
+    expectContainsAidl("ISystemEtc4", false);
 }
 
 TEST_F(FrameworkManifestLevelTest, TargetFcmVersion13) {
@@ -2302,7 +2348,8 @@ TEST_F(CheckMissingHalsTest, Empty) {
 
 TEST_F(CheckMissingHalsTest, Pass) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.0::IHidl"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}), Ok());
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl), Ok());
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl), Ok());
@@ -2310,7 +2357,8 @@ TEST_F(CheckMissingHalsTest, Pass) {
 
 TEST_F(CheckMissingHalsTest, FailVendor) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "vendor.foo.hidl@1.0"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"vendor.foo.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"vendor.foo.aidl.IAidl"}, .stability = "vintf"}};
 
     auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.hidl@1.0"))));
@@ -2332,7 +2380,8 @@ TEST_F(CheckMissingHalsTest, FailVendor) {
 
 TEST_F(CheckMissingHalsTest, FailVersion) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@2.0"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl2.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl2.IAidl"}, .stability = "vintf"}};
 
     auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
@@ -2364,12 +2413,14 @@ class CheckMatrixHalsHasDefinitionTest : public CheckMatricesWithHalDefTestBase 
 
 TEST_F(CheckMatrixHalsHasDefinitionTest, Pass) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.0::IHidl"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     EXPECT_THAT(vintfObject->checkMatrixHalsHasDefinition(hidl, aidl), Ok());
 }
 
 TEST_F(CheckMatrixHalsHasDefinitionTest, FailMissingHidl) {
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     auto res = vintfObject->checkMatrixHalsHasDefinition({}, aidl);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@1.0::IHidl"))));
 }
@@ -2698,6 +2749,56 @@ TEST_P(VintfObjectComposerHalTest, Test) {
 INSTANTIATE_TEST_SUITE_P(VintfObjectComposerHalTest, VintfObjectComposerHalTest,
                          ::testing::ValuesIn(VintfObjectComposerHalTest::GetParams()),
                          [](const auto& info) { return to_string(info.param); });
+
+constexpr const char* systemMatrixLatestMinLtsFormat = R"(
+<compatibility-matrix %s type="framework" level="%s">
+    <kernel version="%s" />
+    <kernel version="%s" />
+    <kernel version="%s" />
+</compatibility-matrix>
+)";
+
+class VintfObjectLatestMinLtsTest : public MultiMatrixTest {};
+
+TEST_F(VintfObjectLatestMinLtsTest, TestEmpty) {
+    SetUpMockSystemMatrices({});
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasError(WithCode(-NAME_NOT_FOUND)));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestMissing) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+    });
+    EXPECT_THAT(
+        vintfObject->getLatestMinLtsAtFcmVersion(Level::T),
+        HasError(WithMessage(HasSubstr("Can't find compatibility matrix fragment for level 7"))));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestSimple) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::T).c_str(), "5.4.86", "5.10.107", "5.15.41"),
+    });
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasValue(KernelVersion{5, 10, 43}));
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::T),
+                HasValue(KernelVersion{5, 15, 41}));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestMultipleFragment) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "5.4.86", "5.10.107", "5.15.41"),
+    });
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasValue(KernelVersion{5, 15, 41}));
+}
 
 }  // namespace testing
 }  // namespace vintf
