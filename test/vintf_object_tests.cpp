@@ -39,7 +39,9 @@ using namespace ::testing;
 using namespace std::literals;
 
 using android::base::testing::HasError;
+using android::base::testing::HasValue;
 using android::base::testing::Ok;
+using android::base::testing::WithCode;
 using android::base::testing::WithMessage;
 using android::vintf::FqInstance;
 
@@ -1732,6 +1734,31 @@ const static std::vector<std::string> systemMatrixKernelXmls = {
     "</compatibility-matrix>\n",
 };
 
+const static std::vector<std::string> systemMatrixKernelXmlsGki = {
+    // 5.xml
+    "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"5\">\n"
+    FAKE_KERNEL("4.14.0", "R_4_14", 5)
+    FAKE_KERNEL("4.19.0", "R_4_19", 5)
+    FAKE_KERNEL("5.4.0", "R_5_4", 5)
+    "</compatibility-matrix>\n",
+    // 6.xml
+    "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"6\">\n"
+    FAKE_KERNEL("4.19.0", "S_4_19", 6)
+    FAKE_KERNEL("5.4.0", "S_5_4", 6)
+    FAKE_KERNEL("5.10.0", "S_5_10", 6)
+    "</compatibility-matrix>\n",
+    // 7.xml
+    "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"7\">\n"
+    FAKE_KERNEL("5.10.0", "T_5_10", 7)
+    FAKE_KERNEL("5.15.0", "T_5_15", 7)
+    "</compatibility-matrix>\n",
+    // 8.xml
+    "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"8\">\n"
+    FAKE_KERNEL("5.15.0", "U_5_15", 8)
+    FAKE_KERNEL("6.1.0", "U_6_1", 8)
+    "</compatibility-matrix>\n",
+};
+
 class KernelTest : public MultiMatrixTest {
    public:
     void expectKernelFcmVersion(size_t targetFcm, Level kernelFcm) {
@@ -1966,6 +1993,45 @@ INSTANTIATE_TEST_SUITE_P(KernelTest, KernelTestP, ValuesIn(KernelTestParamValues
                          &PrintKernelTestParam);
 INSTANTIATE_TEST_SUITE_P(NoRKernelWithoutFcm, KernelTestP, ValuesIn(RKernelTestParamValues()),
                          &PrintKernelTestParam);
+
+// clang-format on
+
+std::vector<KernelTestP::ParamType> GkiKernelTestParamValues() {
+    std::vector<KernelTestP::ParamType> ret;
+    std::vector<std::string> matrices = systemMatrixKernelXmlsGki;
+
+    // Kernel FCM version R: may use 4.19-stable and android12-5.4
+    ret.emplace_back(matrices, MakeKernelInfo("4.19.0", "R_4_19"), Level::R, Level::R, true);
+    ret.emplace_back(matrices, MakeKernelInfo("4.19.0", "S_4_19"), Level::R, Level::R, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.4.0", "R_5_4"), Level::R, Level::R, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.4.0", "S_5_4"), Level::R, Level::R, true);
+
+    // Kernel FCM version S: may not use android13-5.10.
+    ret.emplace_back(matrices, MakeKernelInfo("5.4.0", "S_5_4"), Level::S, Level::S, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.10.0", "S_5_10"), Level::S, Level::S, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.10.0", "T_5_10"), Level::S, Level::S, false);
+
+    // Kernel FCM version T: may not use android14-5.15.
+    ret.emplace_back(matrices, MakeKernelInfo("5.10.0", "T_5_10"), Level::T, Level::T, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.15.0", "T_5_15"), Level::T, Level::T, true);
+    ret.emplace_back(matrices, MakeKernelInfo("5.15.0", "U_5_15"), Level::T, Level::T, false);
+
+    return ret;
+}
+
+std::string GkiPrintKernelTestParam(const TestParamInfo<KernelTestP::ParamType>& info) {
+    const auto& [matrices, kernelInfo, targetFcm, kernelFcm, pass] = info.param;
+    std::string ret = kernelInfo.configs().begin()->first;
+    ret += "_TargetFcm" + (targetFcm == Level::UNSPECIFIED ? "Unspecified" : to_string(targetFcm));
+    ret += "_KernelFcm" + (kernelFcm == Level::UNSPECIFIED ? "Unspecified" : to_string(kernelFcm));
+    ret += "_Should"s + (pass ? "Pass" : "Fail");
+    return ret;
+}
+
+INSTANTIATE_TEST_SUITE_P(GkiNoCheckFutureKmi, KernelTestP, ValuesIn(GkiKernelTestParamValues()),
+                         &GkiPrintKernelTestParam);
+
+// clang-format off
 
 class VintfObjectPartialUpdateTest : public MultiMatrixTest {
    protected:
@@ -2346,7 +2412,8 @@ TEST_F(CheckMissingHalsTest, Empty) {
 
 TEST_F(CheckMissingHalsTest, Pass) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.0::IHidl"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}), Ok());
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl), Ok());
     EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl), Ok());
@@ -2354,7 +2421,8 @@ TEST_F(CheckMissingHalsTest, Pass) {
 
 TEST_F(CheckMissingHalsTest, FailVendor) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "vendor.foo.hidl@1.0"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"vendor.foo.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"vendor.foo.aidl.IAidl"}, .stability = "vintf"}};
 
     auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.hidl@1.0"))));
@@ -2376,7 +2444,8 @@ TEST_F(CheckMissingHalsTest, FailVendor) {
 
 TEST_F(CheckMissingHalsTest, FailVersion) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@2.0"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl2.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl2.IAidl"}, .stability = "vintf"}};
 
     auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
@@ -2408,12 +2477,14 @@ class CheckMatrixHalsHasDefinitionTest : public CheckMatricesWithHalDefTestBase 
 
 TEST_F(CheckMatrixHalsHasDefinitionTest, Pass) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.0::IHidl"}};
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     EXPECT_THAT(vintfObject->checkMatrixHalsHasDefinition(hidl, aidl), Ok());
 }
 
 TEST_F(CheckMatrixHalsHasDefinitionTest, FailMissingHidl) {
-    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"}}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
     auto res = vintfObject->checkMatrixHalsHasDefinition({}, aidl);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@1.0::IHidl"))));
 }
@@ -2742,6 +2813,56 @@ TEST_P(VintfObjectComposerHalTest, Test) {
 INSTANTIATE_TEST_SUITE_P(VintfObjectComposerHalTest, VintfObjectComposerHalTest,
                          ::testing::ValuesIn(VintfObjectComposerHalTest::GetParams()),
                          [](const auto& info) { return to_string(info.param); });
+
+constexpr const char* systemMatrixLatestMinLtsFormat = R"(
+<compatibility-matrix %s type="framework" level="%s">
+    <kernel version="%s" />
+    <kernel version="%s" />
+    <kernel version="%s" />
+</compatibility-matrix>
+)";
+
+class VintfObjectLatestMinLtsTest : public MultiMatrixTest {};
+
+TEST_F(VintfObjectLatestMinLtsTest, TestEmpty) {
+    SetUpMockSystemMatrices({});
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasError(WithCode(-NAME_NOT_FOUND)));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestMissing) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+    });
+    EXPECT_THAT(
+        vintfObject->getLatestMinLtsAtFcmVersion(Level::T),
+        HasError(WithMessage(HasSubstr("Can't find compatibility matrix fragment for level 7"))));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestSimple) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::T).c_str(), "5.4.86", "5.10.107", "5.15.41"),
+    });
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasValue(KernelVersion{5, 10, 43}));
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::T),
+                HasValue(KernelVersion{5, 15, 41}));
+}
+
+TEST_F(VintfObjectLatestMinLtsTest, TestMultipleFragment) {
+    SetUpMockSystemMatrices({
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "4.19.191", "5.4.86", "5.10.43"),
+        android::base::StringPrintf(systemMatrixLatestMinLtsFormat, kMetaVersionStr.c_str(),
+                                    to_string(Level::S).c_str(), "5.4.86", "5.10.107", "5.15.41"),
+    });
+    EXPECT_THAT(vintfObject->getLatestMinLtsAtFcmVersion(Level::S),
+                HasValue(KernelVersion{5, 15, 41}));
+}
 
 }  // namespace testing
 }  // namespace vintf
