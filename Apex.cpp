@@ -28,14 +28,27 @@ namespace android {
 namespace vintf {
 namespace details {
 
-status_t Apex::DeviceVintfDirs(FileSystem* fileSystem, std::vector<std::string>* dirs,
-                               std::string* error) {
-    std::vector<std::string> vendor;
-    std::vector<std::string> odm;
+static bool isApexReady(PropertyFetcher* propertyFetcher) {
+#ifdef LIBVINTF_TARGET
+    return propertyFetcher->getBoolProperty("apex.all.ready", false);
+#else
+    // When running on host, it assumes that /apex is ready.
+    // Reason for still relying on PropertyFetcher API is for host-side tests.
+    return propertyFetcher->getBoolProperty("apex.all.ready", true);
+#endif
+}
 
+status_t Apex::DeviceVintfDirs(FileSystem* fileSystem, PropertyFetcher* propertyFetcher,
+                               std::vector<std::string>* dirs, std::string* error) {
+    std::string apexInfoFile = kApexInfoFile;
+    std::string apexDir = "/apex";
+    if (!isApexReady(propertyFetcher)) {
+        apexInfoFile = kBootstrapApexInfoFile;
+        apexDir = "/bootstrap-apex";
+    }
     // Update cached mtime_
-    int64_t mtime;
-    auto status = fileSystem->modifiedTime(kApexInfoFile, &mtime, error);
+    int64_t mtime{};
+    auto status = fileSystem->modifiedTime(apexInfoFile, &mtime, error);
 
     if (status != OK) {
         switch (status) {
@@ -63,7 +76,7 @@ status_t Apex::DeviceVintfDirs(FileSystem* fileSystem, std::vector<std::string>*
 
     // Load apex-info-list
     std::string xml;
-    status = fileSystem->fetch(kApexInfoFile, &xml, error);
+    status = fileSystem->fetch(apexInfoFile, &xml, error);
     if (status == NAME_NOT_FOUND) {
         if (error) {
             error->clear();
@@ -89,14 +102,18 @@ status_t Apex::DeviceVintfDirs(FileSystem* fileSystem, std::vector<std::string>*
 
         const std::string& path = apexInfo.getPreinstalledModulePath();
         if (StartsWith(path, "/vendor/apex/") || StartsWith(path, "/system/vendor/apex/")) {
-            dirs->push_back(fmt::format("/apex/{}/" VINTF_SUB_DIR, apexInfo.getModuleName()));
+            dirs->push_back(fmt::format("{}/{}/" VINTF_SUB_DIR, apexDir, apexInfo.getModuleName()));
         }
     }
     return OK;
 }
 
 // Returns true when /apex/apex-info-list.xml is updated
-bool Apex::HasUpdate(FileSystem* fileSystem) const {
+bool Apex::HasUpdate(FileSystem* fileSystem, PropertyFetcher* propertyFetcher) const {
+    if (!isApexReady(propertyFetcher)) {
+        return false;
+    }
+
     int64_t mtime{};
     std::string error;
     status_t status = fileSystem->modifiedTime(kApexInfoFile, &mtime, &error);

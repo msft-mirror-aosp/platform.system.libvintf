@@ -222,6 +222,22 @@ const std::string systemMatrixLevel1 =
     "            <instance>legacy</instance>\n"
     "        </interface>\n"
     "    </hal>\n"
+    "    <hal format=\"aidl\" optional=\"true\">\n"
+    "        <name>android.hardware.minor</name>\n"
+    "        <version>101</version>\n"
+    "        <interface>\n"
+    "            <name>IMinor</name>\n"
+    "            <instance>default</instance>\n"
+    "        </interface>\n"
+    "    </hal>\n"
+    "    <hal format=\"aidl\" optional=\"true\">\n"
+    "        <name>android.hardware.removed</name>\n"
+    "        <version>101</version>\n"
+    "        <interface>\n"
+    "            <name>IRemoved</name>\n"
+    "            <instance>default</instance>\n"
+    "        </interface>\n"
+    "    </hal>\n"
     "</compatibility-matrix>\n";
 
 const std::string systemMatrixLevel2 =
@@ -237,6 +253,14 @@ const std::string systemMatrixLevel2 =
     "    <hal format=\"hidl\" optional=\"true\">\n"
     "        <name>android.hardware.minor</name>\n"
     "        <version>1.1</version>\n"
+    "        <interface>\n"
+    "            <name>IMinor</name>\n"
+    "            <instance>default</instance>\n"
+    "        </interface>\n"
+    "    </hal>\n"
+    "    <hal format=\"aidl\" optional=\"true\">\n"
+    "        <name>android.hardware.minor</name>\n"
+    "        <version>102</version>\n"
     "        <interface>\n"
     "            <name>IMinor</name>\n"
     "            <instance>default</instance>\n"
@@ -517,6 +541,45 @@ class VintfObjectTestBase : public ::testing::Test {
             .WillRepeatedly(Return(::android::NAME_NOT_FOUND));
     }
 
+    // clang-format on
+    void expectVendorManifest(Level level, const std::vector<std::string>& fqInstances,
+                              const std::vector<FqInstance>& aidlInstances = {}) {
+        std::string xml =
+            android::base::StringPrintf(R"(<manifest %s type="device" target-level="%s">)",
+                                        kMetaVersionStr.c_str(), to_string(level).c_str());
+        for (const auto& fqInstanceString : fqInstances) {
+            auto fqInstance = FqInstance::from(fqInstanceString);
+            ASSERT_TRUE(fqInstance.has_value());
+            xml += android::base::StringPrintf(
+                R"(
+                    <hal format="hidl">
+                        <name>%s</name>
+                        <transport>hwbinder</transport>
+                        <fqname>%s</fqname>
+                    </hal>
+                )",
+                fqInstance->getPackage().c_str(),
+                toFQNameString(fqInstance->getVersion(), fqInstance->getInterface(),
+                               fqInstance->getInstance())
+                    .c_str());
+        }
+        for (const auto& fqInstance : aidlInstances) {
+            xml += android::base::StringPrintf(
+                R"(
+                    <hal format="aidl">
+                        <name>%s</name>
+                        <version>%zu</version>
+                        <fqname>%s</fqname>
+                    </hal>
+                )",
+                fqInstance.getPackage().c_str(), fqInstance.getMinorVersion(),
+                toFQNameString(fqInstance.getInterface(), fqInstance.getInstance()).c_str());
+        }
+        xml += "</manifest>";
+        expectFetchRepeatedly(kVendorManifest, xml);
+    }
+    // clang-format off
+
     MockRuntimeInfoFactory& runtimeInfoFactory() {
         return static_cast<MockRuntimeInfoFactory&>(*vintfObject->getRuntimeInfoFactory());
     }
@@ -534,8 +597,8 @@ class VintfObjectTestBase : public ::testing::Test {
         // Map the apex with manifest to the files below
         const std::string& active_apex = apex_dirs.at(0);
 
-        EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _))
-            .WillOnce(Invoke([apex_dirs](auto*, auto* out, auto*){
+        EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _, _))
+            .WillOnce(Invoke([apex_dirs](auto*, auto*, auto* out, auto*){
                 *out = apex_dirs;
                 return ::android::OK;
             }))
@@ -957,18 +1020,18 @@ class DeviceManifestTest : public VintfObjectTestBase {
       // Map the apex with manifest to the files below
       const std::string& active_apex = apex_dirs.at(0);
 
-      EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _))
-          .WillOnce(Invoke([](auto*, auto* out, auto*){
+      EXPECT_CALL(apex(), DeviceVintfDirs(_, _, _, _))
+          .WillOnce(Invoke([](auto*, auto*, auto* out, auto*){
             *out = {};
             return ::android::OK;
           })) // Initialization
-          .WillOnce(Invoke([apex_dirs](auto*, auto* out, auto*){
+          .WillOnce(Invoke([apex_dirs](auto*, auto*, auto* out, auto*){
             *out = apex_dirs;
             return ::android::OK;
           })) // after apex loaded
           ;
 
-      EXPECT_CALL(apex(), HasUpdate(_)) // Not called during init
+      EXPECT_CALL(apex(), HasUpdate(_, _)) // Not called during init
           .WillOnce(Return(true)) // Apex loaded
           .WillOnce(Return(false)) // no updated to apex data
           ;
@@ -1239,6 +1302,81 @@ TEST_F(DeviceManifestTest, InvalidApexHal) {
     ASSERT_EQ(nullptr, p);
 }
 
+struct VendorApexTest : DeviceManifestTest {
+    virtual void SetUp() override {
+        // Use actual Apex implementation
+        vintfObject = VintfObject::Builder()
+                          .setFileSystem(std::make_unique<NiceMock<MockFileSystem>>())
+                          .setRuntimeInfoFactory(std::make_unique<NiceMock<MockRuntimeInfoFactory>>(
+                              std::make_shared<NiceMock<MockRuntimeInfo>>()))
+                          .setPropertyFetcher(std::make_unique<NiceMock<MockPropertyFetcher>>())
+                          .build();
+        expectVendorManifest();
+        noOdmManifest();
+
+        EXPECT_CALL(fetcher(), listFiles(_, _, _))
+            .WillRepeatedly(Invoke([](const auto&, auto*, auto*) {
+                return ::android::OK;
+            }));
+        EXPECT_CALL(fetcher(), modifiedTime(_, _, _))
+            .WillRepeatedly(Invoke([](const auto&, auto*, auto*) {
+                return ::android::OK;
+            }));
+    }
+};
+
+TEST_F(VendorApexTest, ReadBootstrapApexBeforeApexReady) {
+    // When APEXes are not ready,
+    ON_CALL(propertyFetcher(), getBoolProperty("apex.all.ready", _))
+        .WillByDefault(Return(false));
+    // Should read bootstrap APEXes from /bootstrap-apex
+    EXPECT_CALL(fetcher(), fetch(kBootstrapApexInfoFile, _))
+        .WillOnce(Invoke([](const auto&, auto& out) {
+            out = R"(<?xml version="1.0" encoding="utf-8"?>
+                <apex-info-list>
+                    <apex-info moduleName="com.vendor.foo"
+                            preinstalledModulePath="/vendor/apex/foo.apex"
+                            isActive="true" />
+                </apex-info-list>)";
+            return ::android::OK;
+        }));
+    // ... and read VINTF directory in it.
+    EXPECT_CALL(fetcher(), listFiles("/bootstrap-apex/com.vendor.foo/etc/vintf/", _, _))
+        .WillOnce(Invoke([](const auto&, auto*, auto*) {
+            return ::android::OK;
+        }));
+    auto p = get();
+    (void) p;
+}
+
+TEST_F(VendorApexTest, OkayIfBootstrapApexDirDoesntExist) {
+    // When APEXes are not ready,
+    ON_CALL(propertyFetcher(), getBoolProperty("apex.all.ready", _))
+        .WillByDefault(Return(false));
+    // Should try to read bootstrap APEXes from /bootstrap-apex
+    EXPECT_CALL(fetcher(), fetch(kBootstrapApexInfoFile, _))
+        .WillOnce(Invoke([](const auto&, auto&) {
+            return NAME_NOT_FOUND;
+        }));
+    // Doesn't fallback to normal APEX if APEXes are not ready.
+    EXPECT_CALL(fetcher(), fetch(kApexInfoFile, _)).Times(0);
+    auto p = get();
+    (void) p;
+}
+
+TEST_F(VendorApexTest, DoNotReadBootstrapApexWhenApexesAreReady) {
+    // When APEXes are ready,
+    ON_CALL(propertyFetcher(), getBoolProperty("apex.all.ready", _))
+        .WillByDefault(Return(true));
+    // Should NOT read bootstrap APEXes
+    EXPECT_CALL(fetcher(), fetch(kBootstrapApexInfoFile, _))
+        .Times(0);
+    // Instead, read /apex/apex-info-list.xml
+    EXPECT_CALL(fetcher(), fetch(kApexInfoFile, _));
+    auto p = get();
+    (void) p;
+}
+
 class OdmManifestTest : public VintfObjectTestBase,
                          public ::testing::WithParamInterface<const char*> {
    protected:
@@ -1306,22 +1444,6 @@ struct CheckedFqInstance : FqInstance {
     Version getVersion() const { return FqInstance::getVersion(); }
 };
 
-static VintfObject::ListInstances getInstanceListFunc(
-    const std::vector<CheckedFqInstance>& instances) {
-    return [instances](const std::string& package, Version version, const std::string& interface,
-                       const auto& /* instanceHint */) {
-        std::vector<std::pair<std::string, Version>> ret;
-        for (auto&& existing : instances) {
-            if (existing.getPackage() == package && existing.getVersion().minorAtLeast(version) &&
-                existing.getInterface() == interface) {
-                ret.push_back(std::make_pair(existing.getInstance(), existing.getVersion()));
-            }
-        }
-
-        return ret;
-    };
-}
-
 class DeprecateTest : public VintfObjectTestBase {
    protected:
     virtual void SetUp() override {
@@ -1352,136 +1474,160 @@ class DeprecateTest : public VintfObjectTestBase {
         expectFileNotExist(StrEq(kProductMatrix));
         expectNeverFetch(kSystemLegacyMatrix);
 
-        expectFetchRepeatedly(kVendorManifest,
-                    "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"2\"/>");
         expectFileNotExist(StartsWith("/odm/"));
-
-        // Update the device manifest cache because CheckDeprecate does not fetch
-        // device manifest again if cache exist.
-        vintfObject->getDeviceHalManifest();
     }
-
 };
 
+// clang-format on
+
+FqInstance aidlFqInstance(const std::string& package, size_t version, const std::string& interface,
+                          const std::string& instance) {
+    auto ret = FqInstance::from(package, kFakeAidlMajorVersion, version, interface, instance);
+    EXPECT_TRUE(ret.has_value());
+    return ret.value_or(FqInstance());
+}
+
+// clang-format off
+
 TEST_F(DeprecateTest, CheckNoDeprecate) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.major@2.0::IMajor/default",
         "product.minor@1.1::IMinor/default",
+    }, {
+        aidlFqInstance("android.hardware.minor", 102, "IMinor", "default"),
     });
     std::string error;
-    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation(pred, {}, &error)) << error;
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation({}, &error)) << error;
 }
 
 TEST_F(DeprecateTest, CheckRemovedSystem) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.removed@1.0::IRemoved/default",
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "removed@1.0 should be deprecated. " << error;
 }
 
+TEST_F(DeprecateTest, CheckRemovedSystemAidl) {
+    expectVendorManifest(Level{2}, {}, {
+        aidlFqInstance("android.hardware.removed", 101, "IRemoved", "default"),
+    });
+    std::string error;
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
+        << "removed@101 should be deprecated. " << error;
+}
+
 TEST_F(DeprecateTest, CheckRemovedProduct) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "product.removed@1.0::IRemoved/default",
         "product.minor@1.1::IMinor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "removed@1.0 should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, CheckMinorSystem) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.0::IMinor/default",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "minor@1.0 should be deprecated. " << error;
 }
 
+TEST_F(DeprecateTest, CheckMinorSystemAidl) {
+    expectVendorManifest(Level{2}, {}, {
+        aidlFqInstance("android.hardware.minor", 101, "IMinor", "default"),
+    });
+    std::string error;
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
+        << "minor@101 should be deprecated. " << error;
+}
+
 TEST_F(DeprecateTest, CheckMinorProduct) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "product.minor@1.0::IMinor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "minor@1.0 should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, CheckMinorDeprecatedInstance1) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.0::IMinor/legacy",
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "minor@1.0::IMinor/legacy should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, CheckMinorDeprecatedInstance2) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.minor@1.1::IMinor/legacy",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "minor@1.1::IMinor/legacy should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, CheckMajor1) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.major@1.0::IMajor/default",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "major@1.0 should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, CheckMajor2) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.minor@1.1::IMinor/default",
         "android.hardware.major@1.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "major@1.0 should be deprecated. " << error;
 }
 
 TEST_F(DeprecateTest, HidlMetadataNotDeprecate) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.major@1.0::IMajor/default",
         "android.hardware.major@2.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "major@1.0 should be deprecated. " << error;
     std::vector<HidlInterfaceMetadata> hidlMetadata{
       {"android.hardware.major@2.0::IMajor", {"android.hardware.major@1.0::IMajor"}},
     };
-    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation(pred, hidlMetadata, &error))
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation(hidlMetadata, &error))
         << "major@1.0 should not be deprecated because it extends from 2.0: " << error;
 }
 
 TEST_F(DeprecateTest, HidlMetadataDeprecate) {
-    auto pred = getInstanceListFunc({
+    expectVendorManifest(Level{2}, {
         "android.hardware.major@1.0::IMajor/default",
     });
     std::string error;
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "major@1.0 should be deprecated. " << error;
     std::vector<HidlInterfaceMetadata> hidlMetadata{
       {"android.hardware.major@2.0::IMajor", {"android.hardware.major@1.0::IMajor"}},
     };
-    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, hidlMetadata, &error))
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(hidlMetadata, &error))
         << "major@1.0 should be deprecated. " << error;
 }
 
@@ -1515,9 +1661,7 @@ class MultiMatrixTest : public VintfObjectTestBase {
         }
     }
     void expectTargetFcmVersion(size_t level) {
-        expectFetch(kVendorManifest, "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"" +
-                                         to_string(static_cast<Level>(level)) + "\"/>");
-        vintfObject->getDeviceHalManifest();
+        expectVendorManifest(Level{level}, {});
     }
 };
 
@@ -1627,71 +1771,76 @@ TEST_F(RegexTest, CombineLevel2) {
         xml);
 }
 
+// clang-format on
+
 TEST_F(RegexTest, DeprecateLevel2) {
     std::string error;
-    expectTargetFcmVersion(2);
-
-    auto pred = getInstanceListFunc({
-        "android.hardware.regex@1.1::IRegex/default",
-        "android.hardware.regex@1.1::IRegex/special/1.1",
-        "android.hardware.regex@1.1::IRegex/regex/1.1/1",
-        "android.hardware.regex@1.1::IRegex/regex_common/0",
-        "android.hardware.regex@2.0::IRegex/default",
-    });
-    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation(pred, {}, &error)) << error;
-
-    for (const auto& deprecated : {
-             "android.hardware.regex@1.0::IRegex/default",
-             "android.hardware.regex@1.0::IRegex/special/1.0",
-             "android.hardware.regex@1.0::IRegex/regex/1.0/1",
-             "android.hardware.regex@1.0::IRegex/regex_common/0",
-             "android.hardware.regex@1.1::IRegex/special/1.0",
-             "android.hardware.regex@1.1::IRegex/regex/1.0/1",
-         }) {
-        // 2.0/default ensures compatibility.
-        pred = getInstanceListFunc({
-            deprecated,
-            "android.hardware.regex@2.0::IRegex/default",
-        });
-        error.clear();
-        EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
-            << deprecated << " should be deprecated. " << error;
-    }
+    expectVendorManifest(Level{2}, {
+                                       "android.hardware.regex@1.1::IRegex/default",
+                                       "android.hardware.regex@1.1::IRegex/special/1.1",
+                                       "android.hardware.regex@1.1::IRegex/regex/1.1/1",
+                                       "android.hardware.regex@1.1::IRegex/regex_common/0",
+                                       "android.hardware.regex@2.0::IRegex/default",
+                                   });
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation({}, &error)) << error;
 }
+
+class RegexTestDeprecateLevel2P : public RegexTest, public WithParamInterface<const char*> {};
+TEST_P(RegexTestDeprecateLevel2P, Test) {
+    auto deprecated = GetParam();
+    std::string error;
+    // 2.0/default ensures compatibility.
+    expectVendorManifest(Level{2}, {
+                                       deprecated,
+                                       "android.hardware.regex@2.0::IRegex/default",
+                                   });
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
+        << deprecated << " should be deprecated. " << error;
+}
+
+INSTANTIATE_TEST_SUITE_P(RegexTest, RegexTestDeprecateLevel2P,
+                         ::testing::Values("android.hardware.regex@1.0::IRegex/default",
+                                           "android.hardware.regex@1.0::IRegex/special/1.0",
+                                           "android.hardware.regex@1.0::IRegex/regex/1.0/1",
+                                           "android.hardware.regex@1.0::IRegex/regex_common/0",
+                                           "android.hardware.regex@1.1::IRegex/special/1.0",
+                                           "android.hardware.regex@1.1::IRegex/regex/1.0/1"));
 
 TEST_F(RegexTest, DeprecateLevel3) {
     std::string error;
-    expectTargetFcmVersion(3);
-
-    auto pred = getInstanceListFunc({
-        "android.hardware.regex@2.0::IRegex/special/2.0",
-        "android.hardware.regex@2.0::IRegex/regex/2.0/1",
-        "android.hardware.regex@2.0::IRegex/default",
-    });
-    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation(pred, {}, &error)) << error;
-
-    for (const auto& deprecated : {
-             "android.hardware.regex@1.0::IRegex/default",
-             "android.hardware.regex@1.0::IRegex/special/1.0",
-             "android.hardware.regex@1.0::IRegex/regex/1.0/1",
-             "android.hardware.regex@1.0::IRegex/regex_common/0",
-             "android.hardware.regex@1.1::IRegex/special/1.0",
-             "android.hardware.regex@1.1::IRegex/regex/1.0/1",
-             "android.hardware.regex@1.1::IRegex/special/1.1",
-             "android.hardware.regex@1.1::IRegex/regex/1.1/1",
-             "android.hardware.regex@1.1::IRegex/regex_common/0",
-         }) {
-        // 2.0/default ensures compatibility.
-        pred = getInstanceListFunc({
-            deprecated,
-            "android.hardware.regex@2.0::IRegex/default",
-        });
-
-        error.clear();
-        EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation(pred, {}, &error))
-            << deprecated << " should be deprecated.";
-    }
+    expectVendorManifest(Level{3}, {
+                                       "android.hardware.regex@2.0::IRegex/special/2.0",
+                                       "android.hardware.regex@2.0::IRegex/regex/2.0/1",
+                                       "android.hardware.regex@2.0::IRegex/default",
+                                   });
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation({}, &error)) << error;
 }
+
+class RegexTestDeprecateLevel3P : public RegexTest, public WithParamInterface<const char*> {};
+TEST_P(RegexTestDeprecateLevel3P, Test) {
+    auto deprecated = GetParam();
+    std::string error;
+    // 2.0/default ensures compatibility.
+    expectVendorManifest(Level{3}, {
+                                       deprecated,
+                                       "android.hardware.regex@2.0::IRegex/default",
+                                   });
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
+        << deprecated << " should be deprecated.";
+}
+
+INSTANTIATE_TEST_SUITE_P(RegexTest, RegexTestDeprecateLevel3P,
+                         ::testing::Values("android.hardware.regex@1.0::IRegex/default",
+                                           "android.hardware.regex@1.0::IRegex/special/1.0",
+                                           "android.hardware.regex@1.0::IRegex/regex/1.0/1",
+                                           "android.hardware.regex@1.0::IRegex/regex_common/0",
+                                           "android.hardware.regex@1.1::IRegex/special/1.0",
+                                           "android.hardware.regex@1.1::IRegex/regex/1.0/1",
+                                           "android.hardware.regex@1.1::IRegex/special/1.1",
+                                           "android.hardware.regex@1.1::IRegex/regex/1.1/1",
+                                           "android.hardware.regex@1.1::IRegex/regex_common/0"));
+
+// clang-format off
 
 //
 // Set of framework matrices of different FCM version with <kernel>.
