@@ -2553,56 +2553,60 @@ class CheckMatricesWithHalDefTestBase : public MultiMatrixTest {
 };
 
 // A set of tests on VintfObject::checkMissingHalsInMatrices
-class CheckMissingHalsTest : public CheckMatricesWithHalDefTestBase {};
+class CheckMissingHalsTest : public CheckMatricesWithHalDefTestBase {
+   public:
+    static bool defaultPred(const std::string&) { return true; }
+};
 
 TEST_F(CheckMissingHalsTest, Empty) {
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, {}), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, {}, defaultPred, defaultPred), Ok());
 }
 
 TEST_F(CheckMissingHalsTest, Pass) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.0::IHidl"}};
     std::vector<AidlInterfaceMetadata> aidl{
-        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf"}};
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}), Ok());
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl), Ok());
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl), Ok());
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf", .versions = {1}}};
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}, defaultPred, defaultPred), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl, defaultPred, defaultPred),
+                Ok());
 }
 
 TEST_F(CheckMissingHalsTest, FailVendor) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "vendor.foo.hidl@1.0"}};
     std::vector<AidlInterfaceMetadata> aidl{
-        {.types = {"vendor.foo.aidl.IAidl"}, .stability = "vintf"}};
+        {.types = {"vendor.foo.aidl.IAidl"}, .stability = "vintf", .versions = {1}}};
 
-    auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
+    auto res = vintfObject->checkMissingHalsInMatrices(hidl, {}, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.hidl@1.0"))));
 
-    res = vintfObject->checkMissingHalsInMatrices({}, aidl);
+    res = vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.aidl"))));
 
-    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl);
+    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.hidl@1.0"))));
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("vendor.foo.aidl"))));
 
     auto predicate = [](const auto& interfaceName) {
         return android::base::StartsWith(interfaceName, "android.hardware");
     };
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}, predicate), Ok());
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl, predicate), Ok());
-    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl, predicate), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, {}, predicate, predicate), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices({}, aidl, predicate, predicate), Ok());
+    EXPECT_THAT(vintfObject->checkMissingHalsInMatrices(hidl, aidl, predicate, predicate), Ok());
 }
 
-TEST_F(CheckMissingHalsTest, FailVersion) {
+TEST_F(CheckMissingHalsTest, FailMajorVersion) {
     std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@2.0"}};
     std::vector<AidlInterfaceMetadata> aidl{
-        {.types = {"android.hardware.aidl2.IAidl"}, .stability = "vintf"}};
+        {.types = {"android.hardware.aidl2.IAidl"}, .stability = "vintf", .versions = {1}}};
 
-    auto res = vintfObject->checkMissingHalsInMatrices(hidl, {});
+    auto res = vintfObject->checkMissingHalsInMatrices(hidl, {}, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
 
-    res = vintfObject->checkMissingHalsInMatrices({}, aidl);
+    res = vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl2"))));
 
-    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl);
+    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl, defaultPred, defaultPred);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl2"))));
 
@@ -2610,15 +2614,51 @@ TEST_F(CheckMissingHalsTest, FailVersion) {
         return android::base::StartsWith(interfaceName, "android.hardware");
     };
 
-    res = vintfObject->checkMissingHalsInMatrices(hidl, {}, predicate);
+    res = vintfObject->checkMissingHalsInMatrices(hidl, {}, predicate, predicate);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
 
-    res = vintfObject->checkMissingHalsInMatrices({}, aidl, predicate);
+    res = vintfObject->checkMissingHalsInMatrices({}, aidl, predicate, predicate);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl2"))));
 
-    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl, predicate);
+    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl, predicate, predicate);
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@2.0"))));
     EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl2"))));
+}
+
+TEST_F(CheckMissingHalsTest, FailMinorVersion) {
+    std::vector<HidlInterfaceMetadata> hidl{{.name = "android.hardware.hidl@1.1"}};
+    std::vector<AidlInterfaceMetadata> aidl{
+        {.types = {"android.hardware.aidl.IAidl"}, .stability = "vintf", .versions = {1, 2}}};
+
+    auto res = vintfObject->checkMissingHalsInMatrices(hidl, {}, defaultPred, defaultPred);
+    EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@1.1"))));
+
+    res = vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred);
+    EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl@2"))));
+
+    res = vintfObject->checkMissingHalsInMatrices(hidl, aidl, defaultPred, defaultPred);
+    EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.hidl@1.1"))));
+    EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl@2"))));
+}
+
+TEST_F(CheckMissingHalsTest, PassAidlInDevelopment) {
+    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"},
+                                             .stability = "vintf",
+                                             .versions = {},
+                                             .has_development = true}};
+
+    auto res = vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred);
+    EXPECT_THAT(res, Ok());
+}
+
+TEST_F(CheckMissingHalsTest, FailAidlInDevelopment) {
+    std::vector<AidlInterfaceMetadata> aidl{{.types = {"android.hardware.aidl.IAidl"},
+                                             .stability = "vintf",
+                                             .versions = {1},
+                                             .has_development = true}};
+
+    auto res = vintfObject->checkMissingHalsInMatrices({}, aidl, defaultPred, defaultPred);
+    EXPECT_THAT(res, HasError(WithMessage(HasSubstr("android.hardware.aidl@2"))));
 }
 
 // A set of tests on VintfObject::checkMatrixHalsHasDefinition
