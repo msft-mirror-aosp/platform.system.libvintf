@@ -90,6 +90,11 @@ cc_library {
         "XmlFile.cpp",
         "utils.cpp",
     ],
+    product_variables: {
+        release_aidl_use_unfrozen: {
+            cflags: ["-DAIDL_USE_UNFROZEN"],
+        },
+    },
     generated_sources: ["apex-info-list-tinyxml"],
     shared_libs: libvintf_private_deps,
     header_libs: [
@@ -183,8 +188,14 @@ cc_library_static {
         "libbase",
     ],
     static_libs: [
+        "libaidlmetadata",
         "libvts_vintf_test_common",
     ],
+    product_variables: {
+        release_aidl_use_unfrozen: {
+            cflags: ["-DAIDL_USE_UNFROZEN"],
+        },
+    },
     srcs: [
         "AssembleVintf.cpp",
     ],
@@ -199,6 +210,7 @@ cc_binary_host {
         "libbase",
     ],
     static_libs: [
+        "libaidlmetadata",
         "libassemblevintf",
         "libvts_vintf_test_common",
     ],

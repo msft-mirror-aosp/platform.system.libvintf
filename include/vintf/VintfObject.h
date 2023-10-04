@@ -178,35 +178,6 @@ class VintfObject {
                                CheckFlags::Type flags = CheckFlags::DEFAULT);
 
     /**
-     * A std::function that abstracts a list of "provided" instance names. Given package, version
-     * and interface, the function returns a list of instance names that matches.
-     * This function can represent a manifest, an IServiceManager, etc.
-     * If the source is passthrough service manager, a list of instance names cannot be provided.
-     * Instead, the function should call getService on each of the "hintInstances", and
-     * return those instances for which getService does not return a nullptr. This means that for
-     * passthrough HALs, the deprecation on <regex-instance>s cannot be enforced; only <instance>s
-     * can be enforced.
-     */
-    using ListInstances = std::function<std::vector<std::pair<std::string, Version>>(
-        const std::string& package, Version version, const std::string& interface,
-        const std::vector<std::string>& hintInstances)>;
-    /**
-     * Check deprecation on framework matrices with a provided predicate.
-     *
-     * @param listInstances predicate that takes parameter in this format:
-     *        android.hardware.foo@1.0::IFoo
-     *        and returns {{"default", version}...} if HAL is in use, where version =
-     *        first version in interfaceChain where package + major version matches.
-     *
-     * @return = 0 if success (no deprecated HALs)
-     *         > 0 if there is at least one deprecated HAL
-     *         < 0 if any error (mount partition fails, illformed XML, etc.)
-     */
-    int32_t checkDeprecation(const ListInstances& listInstances,
-                             const std::vector<HidlInterfaceMetadata>& hidlMetadata,
-                             std::string* error = nullptr);
-
-    /**
      * Check deprecation on existing VINTF metadata. Use Device Manifest as the
      * predicate to check if a HAL is in use.
      *
@@ -261,7 +232,8 @@ class VintfObject {
     android::base::Result<void> checkMissingHalsInMatrices(
         const std::vector<HidlInterfaceMetadata>& hidlMetadata,
         const std::vector<AidlInterfaceMetadata>& aidlMetadata,
-        std::function<bool(const std::string&)> shouldCheck = {});
+        std::function<bool(const std::string&)> shouldCheckHidl,
+        std::function<bool(const std::string&)> shouldCheckAidl);
 
     // Check that all HALs in all framework compatibility matrices have the
     // proper interface definition (HIDL / AIDL files).
@@ -289,6 +261,9 @@ class VintfObject {
 
     details::LockedRuntimeInfoCache mDeviceRuntimeInfo;
 
+    bool getCheckAidlCompatMatrix();
+    std::optional<bool> mFakeCheckAidlCompatibilityMatrix;
+
     // Expose functions for testing and recovery
     friend class testing::VintfObjectTestBase;
     friend class testing::VintfObjectRecoveryTest;
@@ -301,6 +276,7 @@ class VintfObject {
     friend class details::FmOnlyVintfObject;
 
    protected:
+    void setFakeCheckAidlCompatMatrix(bool check) { mFakeCheckAidlCompatibilityMatrix = check; }
     virtual const std::unique_ptr<FileSystem>& getFileSystem();
     virtual const std::unique_ptr<PropertyFetcher>& getPropertyFetcher();
     virtual const std::unique_ptr<ObjectFactory<RuntimeInfo>>& getRuntimeInfoFactory();
@@ -370,7 +346,6 @@ class VintfObject {
 
     status_t fetchUnfilteredFrameworkHalManifest(HalManifest* out, std::string* error);
     void filterHalsByDeviceManifestLevel(HalManifest* out);
-    bool isApexReady();
 
     // Helper for checking matrices against lib*idlmetadata. Wrapper of the other variant of
     // getAllFrameworkMatrixLevels. Treat empty output as an error.
@@ -378,22 +353,25 @@ class VintfObject {
 
     using ChildrenMap = std::multimap<std::string, std::string>;
     static bool IsHalDeprecated(const MatrixHal& oldMatrixHal,
+                                const std::string& oldMatrixHalFileName,
                                 const CompatibilityMatrix& targetMatrix,
-                                const ListInstances& listInstances, const ChildrenMap& childrenMap,
-                                std::string* appendedError);
+                                const std::shared_ptr<const HalManifest>& halManifest,
+                                const ChildrenMap& childrenMap, std::string* appendedError);
     static bool IsInstanceDeprecated(const MatrixInstance& oldMatrixInstance,
+                                     const std::string& oldMatrixInstanceFileName,
                                      const CompatibilityMatrix& targetMatrix,
-                                     const ListInstances& listInstances,
+                                     const std::shared_ptr<const HalManifest>& halManifest,
                                      const ChildrenMap& childrenMap, std::string* appendedError);
 
     static android::base::Result<std::vector<FqInstance>> GetListedInstanceInheritance(
-        const std::string& package, const Version& version, const std::string& interface,
-        const std::string& instance, const ListInstances& listInstances,
-        const ChildrenMap& childrenMap);
-    static bool IsInstanceListed(const ListInstances& listInstances, const FqInstance& fqInstance);
+        HalFormat format, const std::string& package, const Version& version,
+        const std::string& interface, const std::string& instance,
+        const std::shared_ptr<const HalManifest>& halManifest, const ChildrenMap& childrenMap);
+    static bool IsInstanceListed(const std::shared_ptr<const HalManifest>& halManifest,
+                                 HalFormat format, const FqInstance& fqInstance);
     static android::base::Result<void> IsFqInstanceDeprecated(
         const CompatibilityMatrix& targetMatrix, HalFormat format, const FqInstance& fqInstance,
-        const ListInstances& listInstances);
+        const std::shared_ptr<const HalManifest>& halManifest);
 
    public:
     /** Builder of VintfObject. See VintfObjectBuilder for details. */
@@ -428,9 +406,9 @@ namespace details {
 // manifest file name for legacy devices.
 std::vector<std::string> dumpFileList(const std::string& sku);
 
-} // namespace details
+}  // namespace details
 
-} // namespace vintf
-} // namespace android
+}  // namespace vintf
+}  // namespace android
 
-#endif // ANDROID_VINTF_VINTF_OBJECT_H_
+#endif  // ANDROID_VINTF_VINTF_OBJECT_H_

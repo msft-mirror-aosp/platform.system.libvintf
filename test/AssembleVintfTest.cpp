@@ -20,6 +20,7 @@
 #include <android-base/stringprintf.h>
 #include <gtest/gtest.h>
 
+#include <aidl/metadata.h>
 #include <vintf/AssembleVintf.h>
 #include <vintf/parse_string.h>
 #include "constants-private.h"
@@ -62,6 +63,12 @@ class AssembleVintfTest : public ::testing::Test {
             getInstance()->setFakeEnv(pair.first, pair.second);
         }
     }
+
+    void setFakeAidlMetadata(const std::vector<AidlInterfaceMetadata>& metadata) {
+        getInstance()->setFakeAidlMetadata(metadata);
+    }
+
+    void setFakeAidlUseUnfrozen(bool use) { getInstance()->setFakeAidlUseUnfrozen(use); }
 
     void addInput(const std::string& name, const std::string& s) {
         getInstance()->addInputStream(name, makeStream(s));
@@ -698,6 +705,142 @@ TEST_F(AssembleVintfTest, ManifestLevelConflictCorrectLocation) {
     EXPECT_FALSE(getInstance()->assemble());
     EXPECT_IN("File 'manifest_1.xml' has level 1", getError());
     EXPECT_IN("File 'manifest_2.xml' has level 2", getError());
+}
+
+TEST_F(AssembleVintfTest, CoreHalsDisallowed) {
+    ASSERT_TRUE(getInstance()->setCoreHalsStrategy("disallow"));
+    auto matrix = StringPrintf(
+        R"(
+            <compatibility-matrix %s type="framework">
+                <hal>
+                    <name>android.hardware.foo</name>
+                    <version>1.0</version>
+                    <interface>
+                        <name>IFoo</name>
+                        <instance>default</instance>
+                    </interface>
+                </hal>
+            </compatibility-matrix>
+        )",
+        kMetaVersionStr.c_str());
+    addInput("compatibility_matrix.xml", matrix);
+    EXPECT_FALSE(getInstance()->assemble());
+    EXPECT_IN("The following HALs are disallowed because they are core HALs", getError())
+}
+
+TEST_F(AssembleVintfTest, CoreHalsOnly) {
+    ASSERT_TRUE(getInstance()->setCoreHalsStrategy("only"));
+    auto matrix = StringPrintf(
+        R"(
+            <compatibility-matrix %s type="framework">
+                <hal>
+                    <name>vendor.hardware.foo</name>
+                    <version>1.0</version>
+                    <interface>
+                        <name>IFoo</name>
+                        <instance>default</instance>
+                    </interface>
+                </hal>
+            </compatibility-matrix>
+        )",
+        kMetaVersionStr.c_str());
+    addInput("compatibility_matrix.xml", matrix);
+    EXPECT_FALSE(getInstance()->assemble());
+    EXPECT_IN("The following HALs are disallowed because they are not core HALs", getError())
+}
+
+TEST_F(AssembleVintfTest, CoreHalsNotChecked) {
+    auto matrix = StringPrintf(
+        R"(
+            <compatibility-matrix %s type="framework">
+                <hal>
+                    <name>android.hardware.foo</name>
+                    <version>1.0</version>
+                    <interface>
+                        <name>IFoo</name>
+                        <instance>default</instance>
+                    </interface>
+                </hal>
+                <hal>
+                    <name>vendor.hardware.foo</name>
+                    <version>1.0</version>
+                    <interface>
+                        <name>IFoo</name>
+                        <instance>default</instance>
+                    </interface>
+                </hal>
+            </compatibility-matrix>
+        )",
+        kMetaVersionStr.c_str());
+    addInput("compatibility_matrix.xml", matrix);
+    EXPECT_TRUE(getInstance()->assemble());
+}
+
+TEST_F(AssembleVintfTest, ForceDowngradeVersion) {
+    setFakeEnvs({{"VINTF_IGNORE_TARGET_FCM_VERSION", "true"}});
+    std::vector<AidlInterfaceMetadata> aidl{{.name = "android.system.bar",
+                                             .stability = "vintf",
+                                             .versions = {1, 2},
+                                             .has_development = true}};
+    setFakeAidlMetadata(aidl);
+    setFakeAidlUseUnfrozen(false);
+    addInput("manifest1.xml", StringPrintf(
+                                  R"(
+                <manifest %s type="framework">
+                   <hal format="aidl">
+                        <name>android.system.bar</name>\n"
+                        <fqname>IFoo/default</fqname>\n"
+                        <version>3</version>\n"
+                    </hal>
+                </manifest>)",
+                                  kMetaVersionStr.c_str()));
+    EXPECT_TRUE(getInstance()->assemble());
+    EXPECT_IN("<version>2</version>", getOutput());
+}
+
+TEST_F(AssembleVintfTest, AllowUnfrozenVersion) {
+    setFakeEnvs({{"VINTF_IGNORE_TARGET_FCM_VERSION", "true"}});
+    std::vector<AidlInterfaceMetadata> aidl{{.name = "android.system.bar",
+                                             .stability = "vintf",
+                                             .versions = {1, 2},
+                                             .has_development = true}};
+    setFakeAidlMetadata(aidl);
+    setFakeAidlUseUnfrozen(true);
+    addInput("manifest1.xml", StringPrintf(
+                                  R"(
+                <manifest %s type="framework">
+                   <hal format="aidl">
+                        <name>android.system.bar</name>\n"
+                        <fqname>IFoo/default</fqname>\n"
+                        <version>3</version>\n"
+                    </hal>
+                </manifest>)",
+                                  kMetaVersionStr.c_str()));
+    EXPECT_TRUE(getInstance()->assemble());
+    EXPECT_IN("<version>3</version>", getOutput());
+}
+
+TEST_F(AssembleVintfTest, KeepFrozenVersion) {
+    setFakeEnvs({{"VINTF_IGNORE_TARGET_FCM_VERSION", "true"}});
+    // V3 is already frozen
+    std::vector<AidlInterfaceMetadata> aidl{{.name = "android.system.bar",
+                                             .stability = "vintf",
+                                             .versions = {1, 2, 3},
+                                             .has_development = true}};
+    setFakeAidlMetadata(aidl);
+    setFakeAidlUseUnfrozen(false);
+    addInput("manifest1.xml", StringPrintf(
+                                  R"(
+                <manifest %s type="framework">
+                   <hal format="aidl">
+                        <name>android.system.bar</name>\n"
+                        <fqname>IFoo/default</fqname>\n"
+                        <version>3</version>\n"
+                    </hal>
+                </manifest>)",
+                                  kMetaVersionStr.c_str()));
+    EXPECT_TRUE(getInstance()->assemble());
+    EXPECT_IN("<version>3</version>", getOutput());
 }
 
 }  // namespace vintf
