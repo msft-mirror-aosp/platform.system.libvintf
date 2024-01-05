@@ -419,6 +419,12 @@ static bool checkVendorNdkCompatibility(const VendorNdk& matVendorNdk,
         return true;
     }
 
+    // VNDK is deprecated in V; this compat check is not needed if system is beyond Android U
+    // Add version check here to minimize the impact on devices requiring VNDK 34 or older.
+    if (std::stof(matVendorNdk.version()) > 34) {
+        return true;
+    }
+
     // no match is found.
     if (error != nullptr) {
         *error = "Vndk version " + matVendorNdk.version() + " is not supported. " +
