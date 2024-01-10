@@ -698,19 +698,6 @@ class AssembleVintfImpl : public AssembleVintf {
             manifest->mLevel = Level::LEGACY;
             return true;
         }
-        // TODO(b/70628538): Do not infer from Shipping API level.
-        if (shippingApiLevel) {
-            err() << "Warning: Shipping FCM Version is inferred from Shipping API level. "
-                  << "Declare Shipping FCM Version in device manifest directly." << std::endl;
-            manifest->mLevel = details::convertFromApiLevel(shippingApiLevel);
-            if (manifest->mLevel == Level::UNSPECIFIED) {
-                err() << "Error: Shipping FCM Version cannot be inferred from Shipping API "
-                      << "level " << shippingApiLevel << "."
-                      << "Declare Shipping FCM Version in device manifest directly." << std::endl;
-                return false;
-            }
-            return true;
-        }
         // TODO(b/69638851): should be an error if Shipping API level is not defined.
         // For now, just leave it empty; when framework compatibility matrix is built,
         // lowest FCM Version is assumed.
@@ -807,11 +794,6 @@ class AssembleVintfImpl : public AssembleVintf {
             auto currentSepolicyVersionString = getEnv("PLATFORM_SEPOLICY_VERSION");
             if (!currentSepolicyVersionString.empty()) {
                 sepolicyVersionStrings.push_back(currentSepolicyVersionString);
-                // HACK to support pre-vFRC vendor blobs
-                // TODO(b/314010177): remove after new ToT (1000000.0) fully propagates
-                if (currentSepolicyVersionString == "1000000.0") {
-                    sepolicyVersionStrings.push_back("10000.0");
-                }
             }
             for (auto&& s : sepolicyVersionStrings) {
                 Version v;
