@@ -96,6 +96,7 @@ static bool isAllowedToUseLibvintf() {
     std::vector<std::string> allowedBinaries{
         "/system/bin/servicemanager",
         "/system/bin/hwservicemanager",
+        "/system_ext/bin/hwservicemanager",
         // Java: boot time VINTF check
         "/system/bin/app_process32",
         "/system/bin/app_process64",
@@ -209,14 +210,6 @@ status_t VintfObject::getCombinedFrameworkMatrix(
 
     if (deviceManifest != nullptr) {
         deviceLevel = deviceManifest->level();
-    }
-
-    // TODO(b/70628538): Do not infer from Shipping API level.
-    if (deviceLevel == Level::UNSPECIFIED) {
-        auto shippingApi = getPropertyFetcher()->getUintProperty("ro.product.first_api_level", 0u);
-        if (shippingApi != 0u) {
-            deviceLevel = details::convertFromApiLevel(shippingApi);
-        }
     }
 
     if (deviceLevel == Level::UNSPECIFIED) {

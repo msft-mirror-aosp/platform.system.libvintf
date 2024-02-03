@@ -548,6 +548,34 @@ TEST_F(LibVintfTest, HalManifestNativeFqInstancesNoInterface) {
     });
 }
 
+TEST_F(LibVintfTest, QueryNativeInstances) {
+    std::string error;
+    HalManifest manifest;
+    std::string xml = "<manifest " + kMetaVersionStr + R"( type="device">
+            <hal format="native">
+                <name>foo</name>
+                <version>1.0</version>
+                <interface>
+                    <instance>fooinst</instance>
+                </interface>
+           </hal>
+            <hal format="native">
+                <name>bar</name>
+                <fqname>@1.0::I/barinst</fqname>
+           </hal>
+        </manifest>
+    )";
+    ASSERT_TRUE(fromXml(&manifest, xml, &error)) << error;
+
+    EXPECT_EQ(manifest.getNativeInstances("foo"), std::set<std::string>{"fooinst"});
+    EXPECT_TRUE(manifest.hasNativeInstance("foo", "fooinst"));
+    EXPECT_EQ(manifest.getNativeInstances("bar"), std::set<std::string>{"barinst"});
+    EXPECT_TRUE(manifest.hasNativeInstance("bar", "barinst"));
+
+    EXPECT_EQ(manifest.getNativeInstances("baz"), std::set<std::string>{});
+    EXPECT_FALSE(manifest.hasNativeInstance("baz", "bazinst"));
+}
+
 // clang-format off
 
 TEST_F(LibVintfTest, HalManifestDuplicate) {
@@ -858,6 +886,25 @@ TEST_F(LibVintfTest, DeviceCompatibilityMatrixCoverter) {
 }
 
 // clang-format on
+
+TEST_F(LibVintfTest, CompatibilityMatrixDefaultOptionalTrue) {
+    auto xml = "<compatibility-matrix " + kMetaVersionStr + R"( type="device">
+            <hal format="aidl">
+                <name>android.foo.bar</name>
+                <version>1</version>
+                <interface>
+                    <name>IFoo</name>
+                    <instance>default</instance>
+                </interface>
+            </hal>
+        </compatibility-matrix>)";
+    CompatibilityMatrix cm;
+    EXPECT_TRUE(fromXml(&cm, xml));
+    auto hal = getAnyHal(cm, "android.foo.bar");
+    ASSERT_NE(nullptr, hal);
+    EXPECT_TRUE(hal->optional) << "If optional is not specified, it should be true by default";
+}
+
 TEST_F(LibVintfTest, IsValid) {
     EXPECT_TRUE(isValid(ManifestHal()));
 
@@ -2411,7 +2458,7 @@ TEST_F(LibVintfTest, MatrixLevel) {
 
     xml = "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"1\"/>";
     EXPECT_TRUE(fromXml(&cm, xml, &error)) << error;
-    EXPECT_EQ(1u, cm.level());
+    EXPECT_EQ(Level{1}, cm.level());
 }
 
 TEST_F(LibVintfTest, ManifestLevel) {
@@ -2429,7 +2476,7 @@ TEST_F(LibVintfTest, ManifestLevel) {
 
     xml = "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"1\"/>";
     EXPECT_TRUE(fromXml(&manifest, xml, &error)) << error;
-    EXPECT_EQ(1u, manifest.level());
+    EXPECT_EQ(Level{1}, manifest.level());
 }
 
 TEST_F(LibVintfTest, AddOptionalHal) {
@@ -2821,7 +2868,7 @@ TEST_F(LibVintfTest, AddOptionalHalUpdatableViaApex) {
 
     xml =
         "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"1\">\n"
-        "    <hal format=\"aidl\">\n"
+        "    <hal format=\"aidl\" optional=\"false\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <interface>\n"
         "            <name>IFoo</name>\n"
@@ -2833,7 +2880,7 @@ TEST_F(LibVintfTest, AddOptionalHalUpdatableViaApex) {
 
     xml =
         "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"2\">\n"
-        "    <hal format=\"aidl\" updatable-via-apex=\"true\">\n"
+        "    <hal format=\"aidl\" optional=\"false\" updatable-via-apex=\"true\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <interface>\n"
         "            <name>IFoo</name>\n"
@@ -3781,7 +3828,7 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
 
     HalManifest manifest;
     xml =
-        "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"103\">\n"
+        "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"8\">\n"
         "    <hal format=\"hidl\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <transport>hwbinder</transport>\n"
@@ -3797,7 +3844,7 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
     {
         CompatibilityMatrix cm;
         xml =
-            "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"100\">\n"
+            "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"7\">\n"
             "    <hal format=\"hidl\" optional=\"false\">\n"
             "        <name>android.hardware.foo</name>\n"
             "        <version>1.2-3</version>\n"
@@ -3815,8 +3862,8 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
             "</compatibility-matrix>\n";
         EXPECT_TRUE(fromXml(&cm, xml, &error)) << error;
         EXPECT_FALSE(manifest.checkCompatibility(cm, &error));
-        EXPECT_IN("Manifest level = 103", error);
-        EXPECT_IN("Matrix level = 100", error);
+        EXPECT_IN("Manifest level = 8", error);
+        EXPECT_IN("Matrix level = 7", error);
         EXPECT_IN(
             "android.hardware.foo:\n"
             "    required: \n"
@@ -5391,6 +5438,14 @@ TEST_F(LibVintfTest, RuntimeInfoParseGkiKernelReleaseLevelInconsistent) {
     EXPECT_EQ(UNKNOWN_ERROR,
               parseGkiKernelRelease(RuntimeInfo::FetchFlag::KERNEL_FCM,
                                     "5.4.42-android12-0-something", nullptr, &level));
+}
+
+// We bump level numbers for V, so check for consistency
+TEST_F(LibVintfTest, RuntimeInfoGkiReleaseV) {
+    Level level = Level::UNSPECIFIED;
+    EXPECT_EQ(OK, parseGkiKernelRelease(RuntimeInfo::FetchFlag::KERNEL_FCM, "6.1.0-android15-0",
+                                        nullptr, &level));
+    EXPECT_EQ(Level::V, level);
 }
 
 class ManifestMissingITest : public LibVintfTest,
