@@ -293,6 +293,20 @@ bool HalManifest::forEachInstanceOfVersion(
     return true;
 }
 
+bool HalManifest::forEachNativeInstance(
+    const std::string& package, const std::function<bool(const ManifestInstance&)>& func) const {
+    for (const ManifestHal* hal : getHals(package)) {
+        bool cont = hal->forEachInstance([&](const ManifestInstance& manifestInstance) {
+            if (manifestInstance.format() == HalFormat::NATIVE) {
+                return func(manifestInstance);
+            }
+            return true;
+        });
+        if (!cont) return false;
+    }
+    return true;
+}
+
 // indent = 2, {"foo"} => "foo"
 // indent = 2, {"foo", "bar"} => "\n  foo\n  bar";
 template <typename Container>
@@ -389,61 +403,13 @@ std::set<std::string> HalManifest::checkUnusedHals(
     return ret;
 }
 
-std::vector<std::string> HalManifest::checkApexHals(const CompatibilityMatrix& mat) const {
-    std::vector<std::string> ret;
-
-    // Validate any APEX-implemented HALs.
-    // Any HALs found within an APEX (hal.updatableViaApex()) must
-    // be declared as updatable-via-apex in the compatibility matrix (matrixHal.updatableViaApex).
-    //
-    //   hal.updatableViaApex == <any> AND matrixHal.updatableViaApex == true   # VALID
-    //   hal.updatableViaApex == <any> AND matrixHal.updatableViaApex == false  # INVALID
-    //   hal.updatableViaApex == "" (not updatable)                             # VALID
-    //
-    // Below check for INVALID case (hal.updatableViaApex == <any> && !matrixHal.updatableViaApex)
-
-    for (const auto& hal : getHals()) {
-        bool updatableViaApex =
-            hal.updatableViaApex().has_value() && !hal.updatableViaApex()->empty();
-
-        if (updatableViaApex) {
-            // Check every instance is contained in the matrix with an updatable apex attribute
-            (void)hal.forEachInstance([&mat, &ret](const auto& manifestInstance) {
-                LOG(DEBUG) << "Checking APEX HAL " << manifestInstance.description();
-                bool supported = false;
-                for (const auto& matrixHal : mat.getHals()) {
-                    if (matrixHal.updatableViaApex) {
-                        // Use false to break out of forEachInstance to indicate a matrix instance
-                        // that supports the manifest instance.
-                        supported = !matrixHal.forEachInstance([&manifestInstance](
-                                                                   const auto& matrixInstance) {
-                            if (matrixInstance.isSatisfiedBy(manifestInstance.getFqInstance())) {
-                                // break out of forEachInstance
-                                return false;
-                            }
-                            return true;
-                        });
-                        if (supported) {
-                            break;
-                        }
-                    }
-                }
-                if (!supported) {
-                    ret.push_back(manifestInstance.description());
-                }
-                // check all instances
-                return true;
-            });
-        }
-    }
-    return ret;
-}
-
 static bool checkVendorNdkCompatibility(const VendorNdk& matVendorNdk,
                                         const std::vector<VendorNdk>& manifestVendorNdk,
                                         std::string* error) {
     // For pre-P vendor images, device compatibility matrix does not specify <vendor-ndk>
     // tag. Ignore the check for these devices.
+    // VNDK is no longer a dependency for vendor version 35 and beyond. On these images,
+    // <vendor-ndk> is also empty.
     if (matVendorNdk.version().empty()) {
         return true;
     }
@@ -557,17 +523,6 @@ bool HalManifest::checkCompatibility(const CompatibilityMatrix& mat, std::string
                 .empty()) {
             return false;
         }
-        // Check APEX-implemented HALs are supported in matrix
-        auto unsupportedApexHals = checkApexHals(mat);
-        if (!unsupportedApexHals.empty()) {
-            if (error != nullptr) {
-                *error = "APEX-implemented HALs not supported in compatibility matrix:\n";
-                for (auto const& n : unsupportedApexHals) {
-                    *error += "\n" + n;
-                }
-            }
-            return false;
-        }
     }
 
     return true;
@@ -626,7 +581,7 @@ Level HalManifest::level() const {
     return mLevel;
 }
 
-const Version &HalManifest::sepolicyVersion() const {
+const SepolicyVersion& HalManifest::sepolicyVersion() const {
     CHECK(mType == SchemaType::DEVICE);
     return device.mSepolicyVersion;
 }
@@ -712,6 +667,15 @@ std::set<std::string> HalManifest::getAidlInstances(const std::string& package, 
                         interfaceName);
 }
 
+std::set<std::string> HalManifest::getNativeInstances(const std::string& package) const {
+    std::set<std::string> instances;
+    forEachNativeInstance(package, [&](const auto& inst) {
+        instances.insert(inst.instance());
+        return true;
+    });
+    return instances;
+}
+
 bool HalManifest::hasHidlInstance(const std::string& package, const Version& version,
                                   const std::string& interfaceName,
                                   const std::string& instance) const {
@@ -727,6 +691,15 @@ bool HalManifest::hasAidlInstance(const std::string& package, size_t version,
                                   const std::string& interface, const std::string& instance) const {
     return hasInstance(HalFormat::AIDL, package, {details::kFakeAidlMajorVersion, version},
                        interface, instance);
+}
+
+bool HalManifest::hasNativeInstance(const std::string& package, const std::string& instance) const {
+    bool found = false;
+    forEachNativeInstance(package, [&](const auto& inst) {
+        found |= inst.instance() == instance;
+        return !found;  // continue if not found
+    });
+    return found;
 }
 
 bool HalManifest::insertInstance(const FqInstance& fqInstance, Transport transport, Arch arch,
