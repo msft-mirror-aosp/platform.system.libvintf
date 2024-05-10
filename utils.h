@@ -26,6 +26,17 @@
 #include <vintf/RuntimeInfo.h>
 #include <vintf/parse_xml.h>
 
+// Equality for timespec. This should be in global namespace where timespec
+// is defined.
+
+inline bool operator==(const timespec& a, const timespec& b) noexcept {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
+}
+
+inline bool operator!=(const timespec& a, const timespec& b) noexcept {
+    return !(a == b);
+}
+
 namespace android {
 namespace vintf {
 namespace details {
@@ -54,19 +65,6 @@ status_t fetchAllInformation(const FileSystem* fileSystem, const std::string& pa
         return BAD_VALUE;
     }
     return OK;
-}
-
-// TODO(b/70628538): Do not infer from Shipping API level.
-inline Level convertFromApiLevel(size_t apiLevel) {
-    if (apiLevel < 26) {
-        return Level::LEGACY;
-    } else if (apiLevel == 26) {
-        return Level::O;
-    } else if (apiLevel == 27) {
-        return Level::O_MR1;
-    } else {
-        return Level::UNSPECIFIED;
-    }
 }
 
 class PropertyFetcherImpl : public PropertyFetcher {
@@ -114,6 +112,8 @@ static bool mergeField(T* dst, T* src, const T& empty = T{}) {
 [[nodiscard]] std::optional<FqInstance> convertLegacyInstanceIntoFqInstance(
     const std::string& package, const Version& version, const std::string& interface,
     const std::string& instance, HalFormat format, std::string* appendedError);
+
+bool isCoreHal(const std::string& halName);
 
 }  // namespace details
 }  // namespace vintf
