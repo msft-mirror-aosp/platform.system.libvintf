@@ -36,6 +36,7 @@
 #include "parse_xml_for_test.h"
 #include "parse_xml_internal.h"
 #include "test_constants.h"
+#include "utils.h"
 
 using android::base::StringPrintf;
 using ::testing::Combine;
@@ -154,10 +155,10 @@ public:
         return ret;
     }
 
-    HalManifest testDeviceManifest() {
+    HalManifest testDeviceManifestWithSepolicy(SepolicyVersion sepolicyVersion) {
         HalManifest vm;
         vm.mType = SchemaType::DEVICE;
-        vm.device.mSepolicyVersion = {25, 0};
+        vm.device.mSepolicyVersion = sepolicyVersion;
         vm.add(createManifestHal(HalFormat::HIDL, "android.hardware.camera",
                                  {Transport::HWBINDER, Arch::ARCH_EMPTY},
                                  {
@@ -171,6 +172,7 @@ public:
 
         return vm;
     }
+    HalManifest testDeviceManifest() { return testDeviceManifestWithSepolicy({25, 0}); }
     HalManifest testDeviceManifestWithXmlFile() {
         HalManifest vm = testDeviceManifest();
         ManifestXmlFile xmlFile;
@@ -251,6 +253,16 @@ TEST_F(LibVintfTest, Stringify) {
     VersionRange v2;
     EXPECT_TRUE(parse("1.2-3", &v2));
     EXPECT_EQ(v, v2);
+    SepolicyVersionRange v3(4, std::nullopt);
+    EXPECT_EQ(to_string(v3), "4");
+    SepolicyVersionRange v4;
+    EXPECT_TRUE(parse("4", &v4));
+    EXPECT_EQ(v3, v4);
+    SepolicyVersion v5(5, std::nullopt);
+    EXPECT_EQ(to_string(v5), "5");
+    SepolicyVersion v6;
+    EXPECT_TRUE(parse("5", &v6));
+    EXPECT_EQ(v5, v6);
 }
 
 TEST_F(LibVintfTest, GetTransport) {
@@ -303,6 +315,33 @@ TEST_F(LibVintfTest, HalManifestConverter) {
         "    </hal>\n"
         "    <sepolicy>\n"
         "        <version>25.0</version>\n"
+        "    </sepolicy>\n"
+        "</manifest>\n");
+    HalManifest vm2;
+    EXPECT_TRUE(fromXml(&vm2, xml));
+    EXPECT_EQ(vm, vm2);
+}
+
+TEST_F(LibVintfTest, HalManifestConverterWithVfrcSepolicy) {
+    HalManifest vm = testDeviceManifestWithSepolicy({202404, std::nullopt});
+    std::string xml =
+        toXml(vm, SerializeFlags::HALS_ONLY.enableSepolicy());
+    EXPECT_EQ(xml,
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <hal format=\"hidl\">\n"
+        "        <name>android.hardware.camera</name>\n"
+        "        <transport>hwbinder</transport>\n"
+        "        <fqname>@2.0::IBetterCamera/camera</fqname>\n"
+        "        <fqname>@2.0::ICamera/default</fqname>\n"
+        "        <fqname>@2.0::ICamera/legacy/0</fqname>\n"
+        "    </hal>\n"
+        "    <hal format=\"hidl\">\n"
+        "        <name>android.hardware.nfc</name>\n"
+        "        <transport arch=\"32+64\">passthrough</transport>\n"
+        "        <fqname>@1.0::INfc/default</fqname>\n"
+        "    </hal>\n"
+        "    <sepolicy>\n"
+        "        <version>202404</version>\n"
         "    </sepolicy>\n"
         "</manifest>\n");
     HalManifest vm2;
@@ -547,6 +586,34 @@ TEST_F(LibVintfTest, HalManifestNativeFqInstancesNoInterface) {
     });
 }
 
+TEST_F(LibVintfTest, QueryNativeInstances) {
+    std::string error;
+    HalManifest manifest;
+    std::string xml = "<manifest " + kMetaVersionStr + R"( type="device">
+            <hal format="native">
+                <name>foo</name>
+                <version>1.0</version>
+                <interface>
+                    <instance>fooinst</instance>
+                </interface>
+           </hal>
+            <hal format="native">
+                <name>bar</name>
+                <fqname>@1.0::I/barinst</fqname>
+           </hal>
+        </manifest>
+    )";
+    ASSERT_TRUE(fromXml(&manifest, xml, &error)) << error;
+
+    EXPECT_EQ(manifest.getNativeInstances("foo"), std::set<std::string>{"fooinst"});
+    EXPECT_TRUE(manifest.hasNativeInstance("foo", "fooinst"));
+    EXPECT_EQ(manifest.getNativeInstances("bar"), std::set<std::string>{"barinst"});
+    EXPECT_TRUE(manifest.hasNativeInstance("bar", "barinst"));
+
+    EXPECT_EQ(manifest.getNativeInstances("baz"), std::set<std::string>{});
+    EXPECT_FALSE(manifest.hasNativeInstance("baz", "bazinst"));
+}
+
 // clang-format off
 
 TEST_F(LibVintfTest, HalManifestDuplicate) {
@@ -640,6 +707,13 @@ TEST_F(LibVintfTest, VersionConverter) {
     Version v2;
     EXPECT_TRUE(fromXml(&v2, xml));
     EXPECT_EQ(v, v2);
+
+    SepolicyVersion v3(202404, std::nullopt);
+    std::string xml2 = toXml(v3);
+    EXPECT_EQ(xml2, "<version>202404</version>\n");
+    SepolicyVersion v4;
+    EXPECT_TRUE(fromXml(&v4, xml2));
+    EXPECT_EQ(v3, v4);
 }
 
 static bool insert(std::map<std::string, HalInterface>* map, HalInterface&& intf) {
@@ -770,7 +844,7 @@ TEST_F(LibVintfTest, CompatibilityMatrixConverter) {
             {KernelConfig{"CONFIG_FOO", Tristate::YES}, KernelConfig{"CONFIG_BAR", "stringvalue"}}}));
     EXPECT_TRUE(add(cm, MatrixKernel{KernelVersion(4, 4, 1),
             {KernelConfig{"CONFIG_BAZ", 20}, KernelConfig{"CONFIG_BAR", KernelConfigRangeValue{3, 5} }}}));
-    set(cm, Sepolicy(30, {{25, 0}, {26, 0, 3}}));
+    set(cm, Sepolicy(30, {{25, 0}, {26, 0, 3}, {202404, std::nullopt}}));
     setAvb(cm, Version{2, 1});
     std::string xml = toXml(cm);
     EXPECT_EQ(xml,
@@ -817,6 +891,7 @@ TEST_F(LibVintfTest, CompatibilityMatrixConverter) {
             "        <kernel-sepolicy-version>30</kernel-sepolicy-version>\n"
             "        <sepolicy-version>25.0</sepolicy-version>\n"
             "        <sepolicy-version>26.0-3</sepolicy-version>\n"
+            "        <sepolicy-version>202404</sepolicy-version>\n"
             "    </sepolicy>\n"
             "    <avb>\n"
             "        <vbmeta-version>2.1</vbmeta-version>\n"
@@ -857,6 +932,25 @@ TEST_F(LibVintfTest, DeviceCompatibilityMatrixCoverter) {
 }
 
 // clang-format on
+
+TEST_F(LibVintfTest, CompatibilityMatrixDefaultOptionalTrue) {
+    auto xml = "<compatibility-matrix " + kMetaVersionStr + R"( type="device">
+            <hal format="aidl">
+                <name>android.foo.bar</name>
+                <version>1</version>
+                <interface>
+                    <name>IFoo</name>
+                    <instance>default</instance>
+                </interface>
+            </hal>
+        </compatibility-matrix>)";
+    CompatibilityMatrix cm;
+    EXPECT_TRUE(fromXml(&cm, xml));
+    auto hal = getAnyHal(cm, "android.foo.bar");
+    ASSERT_NE(nullptr, hal);
+    EXPECT_TRUE(hal->optional) << "If optional is not specified, it should be true by default";
+}
+
 TEST_F(LibVintfTest, IsValid) {
     EXPECT_TRUE(isValid(ManifestHal()));
 
@@ -1420,6 +1514,7 @@ TEST_F(LibVintfTest, FullCompat) {
         "        <kernel-sepolicy-version>30</kernel-sepolicy-version>\n"
         "        <sepolicy-version>25.5</sepolicy-version>\n"
         "        <sepolicy-version>26.0-3</sepolicy-version>\n"
+        "        <sepolicy-version>202404</sepolicy-version>\n"
         "    </sepolicy>\n"
         "    <avb>\n"
         "        <vbmeta-version>2.1</vbmeta-version>\n"
@@ -1465,16 +1560,34 @@ TEST_F(LibVintfTest, FullCompat) {
     EXPECT_FALSE(manifest.checkCompatibility(matrix));
     set(matrix, Sepolicy{30, {{25, 4}}});
     EXPECT_TRUE(manifest.checkCompatibility(matrix, &error)) << error;
+    set(matrix, Sepolicy{30, {{202404, std::nullopt}}});
+    EXPECT_FALSE(manifest.checkCompatibility(matrix));
+
+    // vFRC sepolicy test cases
+    manifestXml =
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <sepolicy>\n"
+        "        <version>202404</version>\n"
+        "    </sepolicy>\n"
+        "</manifest>\n";
+    EXPECT_TRUE(fromXml(&manifest, manifestXml));
+    set(matrix, Sepolicy{30, {{202404, std::nullopt}}});
+    EXPECT_TRUE(manifest.checkCompatibility(matrix)) << error;
+    set(matrix, Sepolicy{30, {{202404, 0}}});
+    EXPECT_FALSE(manifest.checkCompatibility(matrix)) << error;
+    set(matrix, Sepolicy{30, {{202504, std::nullopt}}});
+    EXPECT_FALSE(manifest.checkCompatibility(matrix));
 }
 
 // clang-format on
 
 TEST_F(LibVintfTest, ApexInterfaceShouldBeOkayWithoutApexInfoList) {
     details::FileSystemNoOp fs;
-    details::Apex apex;
-    ASSERT_FALSE(apex.HasUpdate(&fs));
+    details::PropertyFetcherNoOp pf;
+    EXPECT_THAT(apex::GetModifiedTime(&fs, &pf), std::nullopt);
     std::vector<std::string> dirs;
-    ASSERT_EQ(OK, apex.DeviceVintfDirs(&fs, &dirs, nullptr));
+    ASSERT_EQ(OK, apex::GetDeviceVintfDirs(&fs, &pf, &dirs, nullptr));
+    ASSERT_EQ(dirs, std::vector<std::string>{});
 }
 
 struct NativeHalCompatTestParam {
@@ -2409,7 +2522,7 @@ TEST_F(LibVintfTest, MatrixLevel) {
 
     xml = "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"1\"/>";
     EXPECT_TRUE(fromXml(&cm, xml, &error)) << error;
-    EXPECT_EQ(1u, cm.level());
+    EXPECT_EQ(Level{1}, cm.level());
 }
 
 TEST_F(LibVintfTest, ManifestLevel) {
@@ -2427,7 +2540,7 @@ TEST_F(LibVintfTest, ManifestLevel) {
 
     xml = "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"1\"/>";
     EXPECT_TRUE(fromXml(&manifest, xml, &error)) << error;
-    EXPECT_EQ(1u, manifest.level());
+    EXPECT_EQ(Level{1}, manifest.level());
 }
 
 TEST_F(LibVintfTest, AddOptionalHal) {
@@ -2819,7 +2932,7 @@ TEST_F(LibVintfTest, AddOptionalHalUpdatableViaApex) {
 
     xml =
         "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"1\">\n"
-        "    <hal format=\"aidl\">\n"
+        "    <hal format=\"aidl\" optional=\"false\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <interface>\n"
         "            <name>IFoo</name>\n"
@@ -2831,7 +2944,7 @@ TEST_F(LibVintfTest, AddOptionalHalUpdatableViaApex) {
 
     xml =
         "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"2\">\n"
-        "    <hal format=\"aidl\" updatable-via-apex=\"true\">\n"
+        "    <hal format=\"aidl\" optional=\"false\" updatable-via-apex=\"true\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <interface>\n"
         "            <name>IFoo</name>\n"
@@ -3779,7 +3892,7 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
 
     HalManifest manifest;
     xml =
-        "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"103\">\n"
+        "<manifest " + kMetaVersionStr + " type=\"device\" target-level=\"8\">\n"
         "    <hal format=\"hidl\">\n"
         "        <name>android.hardware.foo</name>\n"
         "        <transport>hwbinder</transport>\n"
@@ -3795,7 +3908,7 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
     {
         CompatibilityMatrix cm;
         xml =
-            "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"100\">\n"
+            "<compatibility-matrix " + kMetaVersionStr + " type=\"framework\" level=\"7\">\n"
             "    <hal format=\"hidl\" optional=\"false\">\n"
             "        <name>android.hardware.foo</name>\n"
             "        <version>1.2-3</version>\n"
@@ -3813,8 +3926,8 @@ TEST_F(LibVintfTest, MatrixDetailErrorMsg) {
             "</compatibility-matrix>\n";
         EXPECT_TRUE(fromXml(&cm, xml, &error)) << error;
         EXPECT_FALSE(manifest.checkCompatibility(cm, &error));
-        EXPECT_IN("Manifest level = 103", error);
-        EXPECT_IN("Matrix level = 100", error);
+        EXPECT_IN("Manifest level = 8", error);
+        EXPECT_IN("Matrix level = 7", error);
         EXPECT_IN(
             "android.hardware.foo:\n"
             "    required: \n"
@@ -4130,7 +4243,7 @@ TEST_F(LibVintfTest, RegexInstanceCompat) {
         "    </hal>\n"
         "    <sepolicy>\n"
         "        <kernel-sepolicy-version>0</kernel-sepolicy-version>\n"
-        "        <sepolicy-version>0.0</sepolicy-version>\n"
+        "        <sepolicy-version>0</sepolicy-version>\n"
         "    </sepolicy>\n"
         "</compatibility-matrix>\n";
     EXPECT_TRUE(fromXml(&matrix, matrixXml, &error)) << error;
@@ -4473,10 +4586,10 @@ struct InMemoryFileSystem : FileSystem {
         *out = std::vector<std::string>{begin(entries), end(entries)};
         return OK;
     }
-    status_t modifiedTime(const std::string& path, int64_t* mtime, std::string* error) const {
+    status_t modifiedTime(const std::string& path, timespec* mtime, std::string* error) const {
         (void)error;
         if (auto it = files.find(path); it != files.end()) {
-            *mtime = 0;
+            *mtime = timespec{};
             return OK;
         }
         return NAME_NOT_FOUND;
@@ -5389,6 +5502,14 @@ TEST_F(LibVintfTest, RuntimeInfoParseGkiKernelReleaseLevelInconsistent) {
     EXPECT_EQ(UNKNOWN_ERROR,
               parseGkiKernelRelease(RuntimeInfo::FetchFlag::KERNEL_FCM,
                                     "5.4.42-android12-0-something", nullptr, &level));
+}
+
+// We bump level numbers for V, so check for consistency
+TEST_F(LibVintfTest, RuntimeInfoGkiReleaseV) {
+    Level level = Level::UNSPECIFIED;
+    EXPECT_EQ(OK, parseGkiKernelRelease(RuntimeInfo::FetchFlag::KERNEL_FCM, "6.1.0-android15-0",
+                                        nullptr, &level));
+    EXPECT_EQ(Level::V, level);
 }
 
 class ManifestMissingITest : public LibVintfTest,

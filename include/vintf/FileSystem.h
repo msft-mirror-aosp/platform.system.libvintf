@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include <sys/stat.h>  // for timespec
+
 #include <utils/Errors.h>
 
 namespace android {
@@ -45,7 +47,7 @@ class FileSystem {
                                std::string* error) const = 0;
     // Return NAME_NOT_FOUND if file is not found,
     //        OK if "mtime" is set with modified time of the file.
-    virtual status_t modifiedTime(const std::string& path, int64_t* mtime,
+    virtual status_t modifiedTime(const std::string& path, timespec* mtime,
                                   std::string* error) const = 0;
 };
 
@@ -66,7 +68,7 @@ class FileSystemImpl : public FileSystem {
    public:
     status_t fetch(const std::string&, std::string*, std::string*) const override;
     status_t listFiles(const std::string&, std::vector<std::string>*, std::string*) const override;
-    status_t modifiedTime(const std::string& path, int64_t* mtime, std::string* error) const;
+    status_t modifiedTime(const std::string& path, timespec* mtime, std::string* error) const;
 };
 
 // Class that does nothing.
@@ -74,7 +76,7 @@ class FileSystemNoOp : public FileSystem {
    public:
     status_t fetch(const std::string&, std::string*, std::string*) const override;
     status_t listFiles(const std::string&, std::vector<std::string>*, std::string*) const override;
-    status_t modifiedTime(const std::string& path, int64_t* mtime,
+    status_t modifiedTime(const std::string& path, timespec* mtime,
                           std::string* error) const override;
 };
 
@@ -86,7 +88,7 @@ class FileSystemUnderPath : public FileSystem {
                    std::string* error) const override;
     status_t listFiles(const std::string& path, std::vector<std::string>* out,
                        std::string* error) const override;
-    status_t modifiedTime(const std::string& path, int64_t* mtime,
+    status_t modifiedTime(const std::string& path, timespec* mtime,
                           std::string* error) const override;
 
    protected:
@@ -97,6 +99,27 @@ class FileSystemUnderPath : public FileSystem {
     FileSystemImpl mImpl;
 };
 
+// A FileSystem object that can redirect access for one path
+// FileSystem is read via the internal impl.
+class PathReplacingFileSystem : public FileSystem {
+   public:
+    // Use |impl| for any actual reads. Owns impl.
+    PathReplacingFileSystem(std::string path_to_override, std::string path_replacement,
+                            std::unique_ptr<FileSystem> impl);
+
+    status_t fetch(const std::string& path, std::string* fetched,
+                   std::string* error) const override;
+    status_t listFiles(const std::string& path, std::vector<std::string>* out,
+                       std::string* error) const override;
+    status_t modifiedTime(const std::string& path, timespec* mtime,
+                          std::string* error) const override;
+
+   private:
+    std::string path_replace(std::string_view path) const;
+    std::string path_to_replace_;
+    std::string path_replacement_;
+    std::unique_ptr<FileSystem> impl_;
+};
 }  // namespace details
 }  // namespace vintf
 }  // namespace android
