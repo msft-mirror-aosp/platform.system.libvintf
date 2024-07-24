@@ -1584,10 +1584,10 @@ TEST_F(LibVintfTest, FullCompat) {
 TEST_F(LibVintfTest, ApexInterfaceShouldBeOkayWithoutApexInfoList) {
     details::FileSystemNoOp fs;
     details::PropertyFetcherNoOp pf;
-    details::Apex apex;
-    ASSERT_FALSE(apex.HasUpdate(&fs, &pf));
+    EXPECT_THAT(apex::GetModifiedTime(&fs, &pf), std::nullopt);
     std::vector<std::string> dirs;
-    ASSERT_EQ(OK, apex.DeviceVintfDirs(&fs, &pf, &dirs, nullptr));
+    ASSERT_EQ(OK, apex::GetDeviceVintfDirs(&fs, &pf, &dirs, nullptr));
+    ASSERT_EQ(dirs, std::vector<std::string>{});
 }
 
 struct NativeHalCompatTestParam {
@@ -3652,6 +3652,77 @@ TEST_F(LibVintfTest, ParsingUpdatableHalsWithInterface) {
     EXPECT_THAT(foo.front()->updatableViaApex(), Optional(Eq("com.android.foo")));
 }
 
+TEST_F(LibVintfTest, ParsingHalsAccessor) {
+    std::string error;
+
+    HalManifest manifest;
+    std::string manifestXml =
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <hal format=\"aidl\">\n"
+        "        <name>android.hardware.foo</name>\n"
+        "        <fqname>IFoo/default</fqname>\n"
+        "    </hal>\n"
+        "</manifest>\n";
+    EXPECT_TRUE(fromXml(&manifest, manifestXml, &error)) << error;
+    EXPECT_EQ(manifestXml, toXml(manifest, SerializeFlags::HALS_ONLY));
+
+    auto foo = getHals(manifest, "android.hardware.foo");
+    ASSERT_EQ(1u, foo.size());
+    ASSERT_FALSE(foo.front()->accessor().has_value());
+
+    HalManifest newManifest;
+    std::string accessorName = "android.os.IAccessor/android.hardware.foo.IFoo/default";
+    manifestXml =
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <hal format=\"aidl\">\n"
+        "        <name>android.hardware.foo</name>\n"
+        "        <accessor>" + accessorName + "</accessor>\n"
+        "        <fqname>IFoo/default</fqname>\n"
+        "    </hal>\n"
+        "</manifest>\n";
+    EXPECT_TRUE(fromXml(&newManifest, manifestXml, &error)) << error;
+    EXPECT_EQ(manifestXml, toXml(newManifest, SerializeFlags::HALS_ONLY));
+
+    foo = getHals(newManifest, "android.hardware.foo");
+    ASSERT_EQ(1u, foo.size());
+    ASSERT_EQ(accessorName, foo.front()->accessor());
+}
+
+TEST_F(LibVintfTest, RejectHalsAccessorNoValue) {
+    std::string error;
+
+    HalManifest manifest;
+    std::string manifestXml =
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <hal format=\"aidl\">\n"
+        "        <name>android.hardware.foo</name>\n"
+        "        <accessor></accessor>\n"
+        "        <fqname>IFoo/default</fqname>\n"
+        "    </hal>\n"
+        "</manifest>\n";
+    EXPECT_FALSE(fromXml(&manifest, manifestXml, &error));
+    EXPECT_IN("Accessor requires a non-empty value", error);
+}
+
+TEST_F(LibVintfTest, RejectHalsAccessorMoreThanOneValue) {
+    std::string error;
+
+    HalManifest manifest;
+    std::string accessorName1 = "android.os.IAccessor/android.hardware.foo.IFoo/default";
+    std::string accessorName2 = "android.os.IAccessor/android.hardware.foo.IFoo/vm";
+    std::string manifestXml =
+        "<manifest " + kMetaVersionStr + " type=\"device\">\n"
+        "    <hal format=\"aidl\">\n"
+        "        <name>android.hardware.foo</name>\n"
+        "        <accessor>" + accessorName1 + "</accessor>\n"
+        "        <accessor>" + accessorName2 + "</accessor>\n"
+        "        <fqname>IFoo/default</fqname>\n"
+        "    </hal>\n"
+        "</manifest>\n";
+    EXPECT_FALSE(fromXml(&manifest, manifestXml, &error));
+    EXPECT_IN("No more than one <accessor> is allowed in <hal>", error);
+}
+
 TEST_F(LibVintfTest, ParsingHalsInetTransport) {
     std::string error;
 
@@ -4586,10 +4657,10 @@ struct InMemoryFileSystem : FileSystem {
         *out = std::vector<std::string>{begin(entries), end(entries)};
         return OK;
     }
-    status_t modifiedTime(const std::string& path, TimeSpec* mtime, std::string* error) const {
+    status_t modifiedTime(const std::string& path, timespec* mtime, std::string* error) const {
         (void)error;
         if (auto it = files.find(path); it != files.end()) {
-            *mtime = TimeSpec{};
+            *mtime = timespec{};
             return OK;
         }
         return NAME_NOT_FOUND;
@@ -5975,6 +6046,21 @@ class AllowDupMajorVersionTest
                     <name>android.hardware.nfc</name>
                     <version>2</version>
                     <fqname>INfc/default</fqname>
+                </hal>
+            </manifest>
+            )"});
+        ret.push_back({"AidlAccessorInDifferentHals", "Conflicting Accessor", R"(
+                <hal format="aidl">
+                    <name>android.hardware.nfc</name>
+                    <version>2</version>
+                    <accessor>android.os.accessor.IAccessor/android.hardware.nfc.INfc/a</accessor>
+                    <fqname>INfc/default</fqname>
+                </hal>
+                <hal format="aidl">
+                    <name>android.hardware.nfc</name>
+                    <version>2</version>
+                    <accessor>android.os.accessor.IAccessor/android.hardware.nfc.INfc/a</accessor>
+                    <fqname>INfc/foo</fqname>
                 </hal>
             </manifest>
             )"});

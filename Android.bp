@@ -151,6 +151,7 @@ cc_binary {
     defaults: ["libvintf-defaults"],
     shared_libs: [
         "libbase",
+        "libjsoncpp",
         "libvintf",
     ],
     srcs: [
@@ -177,6 +178,9 @@ cc_binary_host {
         "HostFileSystem.cpp",
     ],
     local_include_dirs: ["include-host"],
+    dist: {
+        targets: ["dist_files"],
+    },
 }
 
 cc_library_static {
