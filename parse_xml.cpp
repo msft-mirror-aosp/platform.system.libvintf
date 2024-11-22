@@ -292,16 +292,32 @@ struct XmlNodeConverter {
     // All parse* functions helps buildObject() to deserialize XML to the object. Returns
     // true if deserialization is successful, false if any error, and "error" will be
     // set to error message.
+    // `rejectUnknown` will cause an error if the attribute is set but it is set
+    // to an unknown value.
     template <typename T>
     inline bool parseOptionalAttr(NodeType* root, const std::string& attrName, T&& defaultValue,
-                                  T* attr, std::string* /* error */) const {
+                                  T* attr, std::string* error, bool rejectUnknown) const {
         std::string attrText;
-        bool success = getAttr(root, attrName, &attrText) &&
-                       ::android::vintf::parse(attrText, attr);
-        if (!success) {
+        bool success = getAttr(root, attrName, &attrText);
+        bool parseSuccess = true;
+        if (success) {
+            parseSuccess = ::android::vintf::parse(attrText, attr);
+        } else {
             *attr = std::move(defaultValue);
         }
-        return true;
+        if (rejectUnknown) {
+            if (!parseSuccess && error)
+                *error += "Unknown value (\"" + attrText + "\") for attribute '" + attrName +
+                          "' is considered a failure.";
+            return parseSuccess;
+        } else {
+            return true;
+        }
+    }
+    template <typename T>
+    inline bool parseOptionalAttr(NodeType* root, const std::string& attrName, T&& defaultValue,
+                                  T* attr, std::string* error) const {
+        return parseOptionalAttr(root, attrName, std::move(defaultValue), attr, error, false);
     }
 
     template <typename T>
@@ -635,6 +651,10 @@ struct MatrixHalConverter : public XmlNodeConverter<MatrixHal> {
                     const MutateNodeParam& param) const override {
         appendAttr(root, "format", object.format);
         appendAttr(root, "optional", object.optional);
+        // Only include if it is not the default empty value
+        if (object.exclusiveTo != ExclusiveTo::EMPTY) {
+            appendAttr(root, "exclusive-to", object.exclusiveTo);
+        }
         // Only include update-via-apex if enabled
         if (object.updatableViaApex) {
             appendAttr(root, "updatable-via-apex", object.updatableViaApex);
@@ -659,6 +679,8 @@ struct MatrixHalConverter : public XmlNodeConverter<MatrixHal> {
         if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param.error) ||
             !parseOptionalAttr(root, "optional", true /* defaultValue */, &object->optional,
                                param.error) ||
+            !parseOptionalAttr(root, "exclusive-to", ExclusiveTo::EMPTY, &object->exclusiveTo,
+                               param.error, true /* rejectUnknown */) ||
             !parseOptionalAttr(root, "updatable-via-apex", false /* defaultValue */,
                                &object->updatableViaApex, param.error) ||
             !parseTextElement(root, "name", &object->name, param.error) ||
@@ -794,6 +816,10 @@ struct ManifestHalConverter : public XmlNodeConverter<ManifestHal> {
     void mutateNode(const ManifestHal& object, NodeType* root,
                     const MutateNodeParam& param) const override {
         appendAttr(root, "format", object.format);
+        // Only include if it is not the default empty value
+        if (object.exclusiveTo != ExclusiveTo::EMPTY) {
+            appendAttr(root, "exclusive-to", object.exclusiveTo);
+        }
         appendTextElement(root, "name", object.name, param.d);
         if (!object.transportArch.empty()) {
             appendChild(root, TransportArchConverter{}(object.transportArch, param));
@@ -842,6 +868,8 @@ struct ManifestHalConverter : public XmlNodeConverter<ManifestHal> {
         std::vector<HalInterface> interfaces;
         if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param.error) ||
             !parseOptionalAttr(root, "override", false, &object->mIsOverride, param.error) ||
+            !parseOptionalAttr(root, "exclusive-to", ExclusiveTo::EMPTY, &object->exclusiveTo,
+                               param.error, true /* rejectUnknown */) ||
             !parseOptionalAttr(root, "updatable-via-apex", {}, &object->mUpdatableViaApex,
                                param.error) ||
             !parseOptionalAttr(root, "updatable-via-system", false /* defaultValue */,
