@@ -3,6 +3,7 @@ package hal.manifest {
 
   public class Hal {
     ctor public Hal();
+    method public java.util.List<java.lang.String> getAccessor();
     method public String getExclusiveTo();
     method public String getFormat();
     method public java.util.List<java.lang.String> getFqname();
