@@ -292,14 +292,24 @@ struct XmlNodeConverter {
     // set to error message.
     template <typename T>
     inline bool parseOptionalAttr(NodeType* root, const std::string& attrName, T&& defaultValue,
-                                  T* attr, std::string* /* error */) const {
+                                  T* attr, const BuildObjectParam& param) const {
         std::string attrText;
-        bool success = getAttr(root, attrName, &attrText) &&
-                       ::android::vintf::parse(attrText, attr);
-        if (!success) {
+        bool success = getAttr(root, attrName, &attrText);
+        bool parseSuccess = true;
+        if (success) {
+            parseSuccess = ::android::vintf::parse(attrText, attr);
+        } else {
             *attr = std::move(defaultValue);
         }
-        return true;
+        if (param.metaVersion >= kMetaVersionStrictAttributeValues) {
+            if (!parseSuccess && param.error) {
+                *param.error += "Unknown value (\"" + attrText + "\") for attribute '" + attrName +
+                                "' is considered a failure.";
+            }
+            return parseSuccess;
+        } else {
+            return true;
+        }
     }
 
     template <typename T>
@@ -539,9 +549,9 @@ struct TransportArchConverter : public XmlNodeConverter<TransportArch> {
     }
     bool buildObject(TransportArch* object, NodeType* root,
                      const BuildObjectParam& param) const override {
-        if (!parseOptionalAttr(root, "arch", Arch::ARCH_EMPTY, &object->arch, param.error) ||
-            !parseOptionalAttr(root, "ip", {}, &object->ip, param.error) ||
-            !parseOptionalAttr(root, "port", {}, &object->port, param.error) ||
+        if (!parseOptionalAttr(root, "arch", Arch::ARCH_EMPTY, &object->arch, param) ||
+            !parseOptionalAttr(root, "ip", {}, &object->ip, param) ||
+            !parseOptionalAttr(root, "port", {}, &object->port, param) ||
             !parseText(root, &object->transport, param.error)) {
             return false;
         }
@@ -654,11 +664,11 @@ struct MatrixHalConverter : public XmlNodeConverter<MatrixHal> {
     bool buildObject(MatrixHal* object, NodeType* root,
                      const BuildObjectParam& param) const override {
         std::vector<HalInterface> interfaces;
-        if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param.error) ||
+        if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param) ||
             !parseOptionalAttr(root, "optional", true /* defaultValue */, &object->optional,
-                               param.error) ||
+                               param) ||
             !parseOptionalAttr(root, "updatable-via-apex", false /* defaultValue */,
-                               &object->updatableViaApex, param.error) ||
+                               &object->updatableViaApex, param) ||
             !parseTextElement(root, "name", &object->name, param.error) ||
             !parseChildren(root, HalInterfaceConverter{}, &interfaces, param)) {
             return false;
@@ -769,8 +779,7 @@ struct MatrixKernelConverter : public XmlNodeConverter<MatrixKernel> {
                      const BuildObjectParam& param) const override {
         Level sourceMatrixLevel = Level::UNSPECIFIED;
         if (!parseAttr(root, "version", &object->mMinLts, param.error) ||
-            !parseOptionalAttr(root, "level", Level::UNSPECIFIED, &sourceMatrixLevel,
-                               param.error) ||
+            !parseOptionalAttr(root, "level", Level::UNSPECIFIED, &sourceMatrixLevel, param) ||
             !parseOptionalChild(root, MatrixKernelConditionsConverter{}, {}, &object->mConditions,
                                 param) ||
             !parseChildren(root, MatrixKernelConfigConverter{}, &object->mConfigs, param)) {
@@ -831,17 +840,14 @@ struct ManifestHalConverter : public XmlNodeConverter<ManifestHal> {
     bool buildObject(ManifestHal* object, NodeType* root,
                      const BuildObjectParam& param) const override {
         std::vector<HalInterface> interfaces;
-        if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param.error) ||
-            !parseOptionalAttr(root, "override", false, &object->mIsOverride, param.error) ||
-            !parseOptionalAttr(root, "updatable-via-apex", {}, &object->mUpdatableViaApex,
-                               param.error) ||
+        if (!parseOptionalAttr(root, "format", HalFormat::HIDL, &object->format, param) ||
+            !parseOptionalAttr(root, "override", false, &object->mIsOverride, param) ||
+            !parseOptionalAttr(root, "updatable-via-apex", {}, &object->mUpdatableViaApex, param) ||
             !parseTextElement(root, "name", &object->name, param.error) ||
             !parseOptionalChild(root, TransportArchConverter{}, {}, &object->transportArch,
                                 param) ||
-            !parseOptionalAttr(root, "max-level", Level::UNSPECIFIED, &object->mMaxLevel,
-                               param.error) ||
-            !parseOptionalAttr(root, "min-level", Level::UNSPECIFIED, &object->mMinLevel,
-                               param.error)) {
+            !parseOptionalAttr(root, "max-level", Level::UNSPECIFIED, &object->mMaxLevel, param) ||
+            !parseOptionalAttr(root, "min-level", Level::UNSPECIFIED, &object->mMinLevel, param)) {
             return false;
         }
 
@@ -1228,9 +1234,9 @@ struct KernelInfoConverter : public XmlNodeConverter<KernelInfo> {
     }
     bool buildObject(KernelInfo* object, NodeType* root,
                      const BuildObjectParam& param) const override {
-        return parseOptionalAttr(root, "version", {}, &object->mVersion, param.error) &&
+        return parseOptionalAttr(root, "version", {}, &object->mVersion, param) &&
                parseOptionalAttr(root, "target-level", Level::UNSPECIFIED, &object->mLevel,
-                                 param.error) &&
+                                 param) &&
                parseChildren(root, StringKernelConfigConverter{}, &object->mConfigs, param);
     }
 };
@@ -1320,7 +1326,7 @@ struct HalManifestConverter : public XmlNodeConverter<HalManifest> {
             }
 
             if (!parseOptionalAttr(root, "target-level", Level::UNSPECIFIED, &object->mLevel,
-                                   param.error)) {
+                                   param)) {
                 return false;
             }
 
@@ -1417,7 +1423,7 @@ struct MatrixXmlFileConverter : public XmlNodeConverter<MatrixXmlFile> {
                      const BuildObjectParam& param) const override {
         if (!parseTextElement(root, "name", &object->mName, param.error) ||
             !parseAttr(root, "format", &object->mFormat, param.error) ||
-            !parseOptionalAttr(root, "optional", false, &object->mOptional, param.error) ||
+            !parseOptionalAttr(root, "optional", false, &object->mOptional, param) ||
             !parseChild(root, VersionRangeConverter{}, &object->mVersionRange, param) ||
             !parseOptionalTextElement(root, "path", {}, &object->mOverriddenPath, param.error)) {
             return false;
@@ -1524,8 +1530,7 @@ struct CompatibilityMatrixConverter : public XmlNodeConverter<CompatibilityMatri
                 seenKernelVersions.insert(minLts);
             }
 
-            if (!parseOptionalAttr(root, "level", Level::UNSPECIFIED, &object->mLevel,
-                                   param.error)) {
+            if (!parseOptionalAttr(root, "level", Level::UNSPECIFIED, &object->mLevel, param)) {
                 return false;
             }
 
