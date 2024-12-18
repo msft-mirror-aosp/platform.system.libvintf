@@ -33,6 +33,10 @@ constexpr Version kMetaVersionAidlInet{5, 0};
 // as an error tag.
 constexpr Version kMetaVersionNoHalInterfaceInstance{6, 0};
 
+// The metaversion that throws errors when an attribute value is something
+// other than what is expected. Like `hal format="not_expected"'
+constexpr Version kMetaVersionStrictAttributeValues{9, 0};
+
 // Default version for an AIDL HAL if no version is specified.
 constexpr size_t kDefaultAidlMinorVersion = 1;
 

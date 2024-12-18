@@ -238,6 +238,14 @@ const std::string systemMatrixLevel1 =
     "            <instance>default</instance>\n"
     "        </interface>\n"
     "    </hal>\n"
+    "    <hal format=\"aidl\" exclusive-to=\"virtual-machine\">\n"
+    "        <name>android.hardware.vm.removed</name>\n"
+    "        <version>2</version>\n"
+    "        <interface>\n"
+    "            <name>IRemoved</name>\n"
+    "            <instance>default</instance>\n"
+    "        </interface>\n"
+    "    </hal>\n"
     "</compatibility-matrix>\n";
 
 const std::string systemMatrixLevel2 =
@@ -263,6 +271,14 @@ const std::string systemMatrixLevel2 =
     "        <version>102</version>\n"
     "        <interface>\n"
     "            <name>IMinor</name>\n"
+    "            <instance>default</instance>\n"
+    "        </interface>\n"
+    "    </hal>\n"
+    "    <hal format=\"aidl\" exclusive-to=\"virtual-machine\">\n"
+    "        <name>android.hardware.vm.removed</name>\n"
+    "        <version>3</version>\n"
+    "        <interface>\n"
+    "            <name>IRemoved</name>\n"
     "            <instance>default</instance>\n"
     "        </interface>\n"
     "    </hal>\n"
@@ -547,7 +563,8 @@ class VintfObjectTestBase : public ::testing::Test {
 
     // clang-format on
     void expectVendorManifest(Level level, const std::vector<std::string>& fqInstances,
-                              const std::vector<FqInstance>& aidlInstances = {}) {
+                              const std::vector<FqInstance>& aidlInstances = {},
+                              ExclusiveTo exclusiveTo = ExclusiveTo::EMPTY) {
         std::string xml =
             android::base::StringPrintf(R"(<manifest %s type="device" target-level="%s">)",
                                         kMetaVersionStr.c_str(), to_string(level).c_str());
@@ -570,12 +587,13 @@ class VintfObjectTestBase : public ::testing::Test {
         for (const auto& fqInstance : aidlInstances) {
             xml += android::base::StringPrintf(
                 R"(
-                    <hal format="aidl">
+                    <hal format="aidl" exclusive-to="%s">
                         <name>%s</name>
                         <version>%zu</version>
                         <fqname>%s</fqname>
                     </hal>
                 )",
+                gExclusiveToStrings.at(static_cast<size_t>(exclusiveTo)),
                 fqInstance.getPackage().c_str(), fqInstance.getMinorVersion(),
                 toFQNameString(fqInstance.getInterface(), fqInstance.getInstance()).c_str());
         }
@@ -879,9 +897,9 @@ class DeviceManifestTest : public VintfObjectTestBase {
     void expectApex(const std::string& halManifest = apexHalManifest) {
         expectFetchRepeatedly(kApexInfoFile, R"(<apex-info-list>
             <apex-info moduleName="com.test"
-                preinstalledModulePath="/vendor/apex/com.test.apex" isActive="true"/>
+                partition="VENDOR" isActive="true"/>
             <apex-info moduleName="com.novintf"
-                preinstalledModulePath="/vendor/apex/com.novintf.apex" isActive="true"/>
+                partition="VENDOR" isActive="true"/>
         </apex-info-list>)");
         EXPECT_CALL(fetcher(), modifiedTime(kApexInfoFile, _, _))
             .WillOnce(Invoke([](auto, timespec* out, auto){
@@ -1068,7 +1086,7 @@ TEST_F(VendorApexTest, ReadBootstrapApexBeforeApexReady) {
             out = R"(<?xml version="1.0" encoding="utf-8"?>
                 <apex-info-list>
                     <apex-info moduleName="com.vendor.foo"
-                            preinstalledModulePath="/vendor/apex/foo.apex"
+                            partition="VENDOR"
                             isActive="true" />
                 </apex-info-list>)";
             return ::android::OK;
@@ -1244,7 +1262,7 @@ TEST_F(ManifestOverrideTest, NoOverrideForVendorApex) {
         R"(<apex-info-list>
           <apex-info
             moduleName="com.android.foo"
-            preinstalledModulePath="/vendor/apex/com.android.foo.apex"
+            partition="VENDOR"
             isActive="true"/>
         </apex-info-list>)");
     expect("/apex/com.android.foo/etc/vintf/foo.xml",
@@ -1267,7 +1285,7 @@ TEST_F(ManifestOverrideTest, OdmOverridesVendorApex) {
         R"(<apex-info-list>
             <apex-info
                 moduleName="com.android.foo"
-                preinstalledModulePath="/vendor/apex/com.android.foo.apex"
+                partition="VENDOR"
                 isActive="true"/>
             </apex-info-list>)");
     expect("/apex/com.android.foo/etc/vintf/foo.xml",
@@ -1362,6 +1380,33 @@ TEST_F(DeprecateTest, CheckRemovedSystem) {
     std::string error;
     EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "removed@1.0 should be deprecated. " << error;
+}
+
+TEST_F(DeprecateTest, CheckRemovedVersionAccess) {
+    expectVendorManifest(Level{2}, {}, {aidlFqInstance("android.hardware.vm.removed", 2, "IRemoved",
+                                                       "default")}, ExclusiveTo::VM);
+    std::string error;
+    EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
+        << "removed@2 should be deprecated. " << error;
+    EXPECT_IN("android.hardware.vm.removed", error);
+    EXPECT_IN("is deprecated; requires at least", error);
+}
+
+TEST_F(DeprecateTest, CheckOkVersionSystemAccess) {
+    expectVendorManifest(Level{2}, {}, {aidlFqInstance("android.hardware.vm.removed", 3, "IRemoved",
+                                                       "default")}, ExclusiveTo::VM);
+    std::string error;
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation({}, &error))
+        << "V3 should be allowed at level 2" << error;
+}
+
+TEST_F(DeprecateTest, CheckRemovedSystemAccessWrong) {
+    expectVendorManifest(Level{2}, {}, {aidlFqInstance("android.hardware.vm.removed", 2, "IRemoved",
+                                                       "default")}, ExclusiveTo::EMPTY);
+    std::string error;
+    EXPECT_EQ(NO_DEPRECATED_HALS, vintfObject->checkDeprecation({}, &error))
+        << "There is no entry for this HAL with ExclusiveTo::EMPTY so it "
+        << "should not show as deprecated." << error;
 }
 
 TEST_F(DeprecateTest, CheckRemovedSystemAidl) {
@@ -2204,7 +2249,7 @@ class FrameworkManifestTest : public VintfObjectTestBase,
             <apex-info-list>
                 <apex-info
                     moduleName="com.system"
-                    preinstalledModulePath="/system/apex/com.system.apex"
+                    partition="SYSTEM"
                     isActive="true"/>
             </apex-info-list>)");
         EXPECT_CALL(fetcher(), modifiedTime(kApexInfoFile, _, _))
@@ -2288,25 +2333,17 @@ class FrameworkManifestLevelTest : public VintfObjectTestBase {
             }));
     }
 
-    void expectTargetFcmVersion(size_t level, Version metaVersion) {
+    void expectTargetFcmVersion(size_t level) {
         std::string xml = android::base::StringPrintf(
-            R"(<manifest version="%s" type="device" target-level="%s"/>)",
-            to_string(metaVersion).c_str(), to_string(static_cast<Level>(level)).c_str());
+            R"(<manifest %s type="device" target-level="%s"/>)", kMetaVersionStr.c_str(),
+            to_string(static_cast<Level>(level)).c_str());
         expectFetch(kVendorManifest, xml);
         (void)vintfObject->getDeviceHalManifest();
     }
 
-    void expectFrameworkContainsAidl(const std::string& interfaceName, bool exists = true) {
+    void expectContainsHidl(const Version& version, const std::string& interfaceName,
+                            bool exists = true) {
         auto manifest = vintfObject->getFrameworkHalManifest();
-        expectContainsAidl(manifest, interfaceName, exists);
-    }
-    void expectFrameworkContainsHidl(const Version& version, const std::string& interfaceName,
-                                     bool exists = true) {
-        auto manifest = vintfObject->getFrameworkHalManifest();
-        expectContainsHidl(manifest, version, interfaceName, exists);
-    }
-    void expectContainsHidl(std::shared_ptr<const HalManifest>& manifest, const Version& version,
-                            const std::string& interfaceName, bool exists = true) {
         ASSERT_NE(nullptr, manifest);
         EXPECT_NE(
             manifest->getHidlInstances("android.frameworks.foo", version, interfaceName).empty(),
@@ -2315,14 +2352,15 @@ class FrameworkManifestLevelTest : public VintfObjectTestBase {
             << "exist.";
     }
 
-    void expectContainsAidl(std::shared_ptr<const HalManifest>& manifest,
-                            const std::string& interfaceName, bool exists = true) {
+    void expectContainsAidl(const std::string& interfaceName, bool exists = true) {
+        auto manifest = vintfObject->getFrameworkHalManifest();
         ASSERT_NE(nullptr, manifest);
         EXPECT_NE(manifest->getAidlInstances("android.frameworks.foo", interfaceName).empty(),
                   exists)
             << interfaceName << " should " << (exists ? "" : "not ") << "exist.";
     }
 
+   private:
     std::string getFragment(HalFormat halFormat, Level minLevel, Level maxLevel,
                             const char* versionedInterface) {
         auto format = R"(<hal format="%s"%s>
@@ -2354,122 +2392,50 @@ TEST_F(FrameworkManifestLevelTest, NoTargetFcmVersion) {
     expectFetch(kVendorManifest, xml);
 
     // If no target FCM version, it is treated as an infinitely old device
-    expectFrameworkContainsHidl({3, 0}, "ISystemEtc");
-    expectFrameworkContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectFrameworkContainsAidl("ISystemEtcFragment3", false);
-    expectFrameworkContainsAidl("ISystemEtc4", false);
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4", false);
 }
 
 TEST_F(FrameworkManifestLevelTest, TargetFcmVersion4) {
-    expectTargetFcmVersion(4, kMetaVersion);
-    expectFrameworkContainsHidl({3, 0}, "ISystemEtc");
-    expectFrameworkContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectFrameworkContainsAidl("ISystemEtcFragment3", false);
-    expectFrameworkContainsAidl("ISystemEtc4", false);
+    expectTargetFcmVersion(4);
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4", false);
 }
 
 TEST_F(FrameworkManifestLevelTest, TargetFcmVersion5) {
-    expectTargetFcmVersion(5, kMetaVersion);
-    expectFrameworkContainsHidl({3, 0}, "ISystemEtc");
-    expectFrameworkContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectFrameworkContainsAidl("ISystemEtcFragment3");
-    expectFrameworkContainsAidl("ISystemEtc4", false);
+    expectTargetFcmVersion(5);
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3");
+    expectContainsAidl("ISystemEtc4", false);
 }
 
 TEST_F(FrameworkManifestLevelTest, TargetFcmVersion6) {
-    expectTargetFcmVersion(6, kMetaVersion);
-    expectFrameworkContainsHidl({3, 0}, "ISystemEtc");
-    expectFrameworkContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectFrameworkContainsAidl("ISystemEtcFragment3");
-    expectFrameworkContainsAidl("ISystemEtc4");
+    expectTargetFcmVersion(6);
+    expectContainsHidl({3, 0}, "ISystemEtc");
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3");
+    expectContainsAidl("ISystemEtc4");
 }
 
 TEST_F(FrameworkManifestLevelTest, TargetFcmVersion7) {
-    expectTargetFcmVersion(7, kMetaVersion);
-    expectFrameworkContainsHidl({3, 0}, "ISystemEtc", false);
-    expectFrameworkContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectFrameworkContainsAidl("ISystemEtcFragment3", false);
-    expectFrameworkContainsAidl("ISystemEtc4");
+    expectTargetFcmVersion(7);
+    expectContainsHidl({3, 0}, "ISystemEtc", false);
+    expectContainsHidl({4, 0}, "ISystemEtcFragment");
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4");
 }
 
-class DeviceManifestLevelTest : public FrameworkManifestLevelTest {
-   protected:
-    void SetUp() override { SetUpWithVersion(kMetaVersion); }
-    void SetUpWithVersion(Version metaVersion) {
-        VintfObjectTestBase::SetUp();
-        useEmptyFileSystem();
-
-        auto head = "<manifest version=\"" + to_string(metaVersion) + R"(" type="device">)";
-        auto tail = "</manifest>";
-
-        auto comboFragment =
-            head + getFragment(HalFormat::HIDL, Level::UNSPECIFIED, Level{6}, "@3.0::ISystemEtc") +
-            getFragment(HalFormat::AIDL, Level{6}, Level{7}, "ISystemEtc4") + tail;
-        expectFetch(kVendorManifestFragmentDir + "combo.xml"s, comboFragment);
-
-        auto hidlFragment =
-            head +
-            getFragment(HalFormat::HIDL, Level::UNSPECIFIED, Level{7}, "@4.0::ISystemEtcFragment") +
-            tail;
-        expectFetch(kVendorManifestFragmentDir + "hidl.xml"s, hidlFragment);
-
-        auto aidlFragment =
-            head + getFragment(HalFormat::AIDL, Level{5}, Level{6}, "ISystemEtcFragment3") + tail;
-        expectFetch(kVendorManifestFragmentDir + "aidl.xml"s, aidlFragment);
-
-        EXPECT_CALL(fetcher(), listFiles(StrEq(kVendorManifestFragmentDir), _, _))
-            .Times(AnyNumber())
-            .WillRepeatedly(Invoke([](const auto&, auto* out, auto*) {
-                *out = {"hidl.xml", "aidl.xml", "combo.xml"};
-                return ::android::OK;
-            }));
-    }
-
-    void expectDeviceContainsAidl(const std::string& interfaceName, bool exists = true) {
-        auto manifest = vintfObject->getDeviceHalManifest();
-        expectContainsAidl(manifest, interfaceName, exists);
-    }
-    void expectDeviceContainsHidl(const Version& version, const std::string& interfaceName,
-                                  bool exists = true) {
-        auto manifest = vintfObject->getDeviceHalManifest();
-        expectContainsHidl(manifest, version, interfaceName, exists);
-    }
-};
-
-TEST_F(DeviceManifestLevelTest, DeviceNoTargetFcmVersion) {
-    auto xml =
-        android::base::StringPrintf(R"(<manifest %s type="device"/> )", kMetaVersionStr.c_str());
-    expectFetch(kVendorManifest, xml);
-
-    // If no target FCM version, it is treated as an infinitely old device
-    expectDeviceContainsHidl({3, 0}, "ISystemEtc");
-    expectDeviceContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectDeviceContainsAidl("ISystemEtcFragment3");
-    expectDeviceContainsAidl("ISystemEtc4");
-}
-
-TEST_F(DeviceManifestLevelTest, DeviceTargetFcmVersion6) {
-    expectTargetFcmVersion(6, kMetaVersion);
-    expectDeviceContainsHidl({3, 0}, "ISystemEtc");
-    expectDeviceContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectDeviceContainsAidl("ISystemEtcFragment3");
-    expectDeviceContainsAidl("ISystemEtc4");
-}
-
-TEST_F(DeviceManifestLevelTest, DeviceTargetFcmVersion202404) {
-    expectTargetFcmVersion(202404, kMetaVersion);
-    expectDeviceContainsHidl({3, 0}, "ISystemEtc");
-    expectDeviceContainsHidl({4, 0}, "ISystemEtcFragment");
-    expectDeviceContainsAidl("ISystemEtcFragment3");
-    expectDeviceContainsAidl("ISystemEtc4");
-}
-
-TEST_F(DeviceManifestLevelTest, DeviceTargetFcmVersion202504) {
-    expectTargetFcmVersion(202504, kMetaVersion);
-    expectDeviceContainsHidl({3, 0}, "ISystemEtc", false);
-    expectDeviceContainsHidl({4, 0}, "ISystemEtcFragment", false);
-    expectDeviceContainsAidl("ISystemEtcFragment3", false);
-    expectDeviceContainsAidl("ISystemEtc4", false);
+TEST_F(FrameworkManifestLevelTest, TargetFcmVersion8) {
+    expectTargetFcmVersion(8);
+    expectContainsHidl({3, 0}, "ISystemEtc", false);
+    expectContainsHidl({4, 0}, "ISystemEtcFragment", false);
+    expectContainsAidl("ISystemEtcFragment3", false);
+    expectContainsAidl("ISystemEtc4", false);
 }
 
 // clang-format off
