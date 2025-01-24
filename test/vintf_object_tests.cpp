@@ -1615,6 +1615,7 @@ TEST_F(RegexInstanceDeprecateTest, AidlDeprecate) {
     std::string error;
     EXPECT_EQ(DEPRECATED, vintfObject->checkDeprecation({}, &error))
         << "minor@101::IMinor/instance2 is deprecated";
+    EXPECT_IN("minor@101", error);
 }
 
 class MultiMatrixTest : public VintfObjectTestBase {
