@@ -804,8 +804,10 @@ bool VintfObject::IsInstanceDeprecated(const MatrixInstance& oldMatrixInstance,
     auto addErrorForInstance = [&](const ManifestInstance& manifestInstance) {
         const std::string& servedInstance = manifestInstance.instance();
         Version servedVersion = manifestInstance.version();
-        if (!oldMatrixInstance.matchInstance(servedInstance)) {
-            // ignore unrelated instance
+
+        // ignore unrelated instance on old devices only
+        if (!oldMatrixInstance.matchInstance(servedInstance) &&
+            deviceManifest->level() < Level::B) {
             return true;  // continue
         }
 
