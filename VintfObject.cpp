@@ -1005,8 +1005,14 @@ int32_t VintfObject::checkDeprecation(const std::vector<HidlInterfaceMetadata>& 
     // Move these matrices into the targetMatrices vector...
     std::move(targetMatricesPartition, matrixFragments.end(), std::back_inserter(targetMatrices));
     if (targetMatrices.empty()) {
-        if (error)
-            *error = "Cannot find framework matrix at FCM version " + to_string(deviceLevel) + ".";
+        if (error) {
+            std::vector<std::string> files;
+            for (const auto& matrix : matrixFragments) {
+                files.push_back(matrix.fileName());
+            }
+            *error = "Cannot find framework matrix at FCM version " + to_string(deviceLevel) +
+                     ". Looked in:\n    " + android::base::Join(files, "\n    ");
+        }
         return NAME_NOT_FOUND;
     }
     // so that they can be combined into one matrix for deprecation checking.
