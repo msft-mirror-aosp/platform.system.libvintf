@@ -571,11 +571,15 @@ int checkOne(const Dirmap& dirmap, const Properties& props) {
 
 void Logger(android::base::LogId, android::base::LogSeverity severity, const char* /*tag*/,
             const char* /*file*/, unsigned int /*line*/, const char* message) {
-    if (severity >= android::base::WARNING) {
+    if (severity >= android::base::ERROR) {
         fflush(stdout);
-        fprintf(stderr, "%s\n", message);
+        fprintf(stderr, "\033[31m%s\033[0m\n", message);
+    } else if (severity >= android::base::WARNING) {
+        fflush(stdout);
+        fprintf(stderr, "\033[33m[WARN] %s\033[0m\n", message);
     } else {
-        fprintf(stdout, "%s\n", message);
+        fflush(stderr);
+        fprintf(stdout, "[INFO] %s\n", message);
     }
 }
 
